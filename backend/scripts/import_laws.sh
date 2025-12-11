@@ -51,9 +51,9 @@ else
 fi
 
 # 设置数据库密码
-read -p "请输入数据库密码（默认: hjj060618）: " DB_PASSWORD
+read -p "请输入数据库密码（默认: 123456）: " DB_PASSWORD
 if [ -z "$DB_PASSWORD" ]; then
-    DB_PASSWORD="hjj060618"
+    DB_PASSWORD="123456"
 fi
 
 # 运行导入脚本

@@ -58,8 +58,8 @@ if not exist "%REPO_PATH%" (
 
 REM 设置数据库密码
 set DB_PASSWORD=
-set /p DB_PASSWORD="请输入数据库密码（默认: hjj060618）: "
-if "%DB_PASSWORD%"=="" set DB_PASSWORD=hjj060618
+set /p DB_PASSWORD="请输入数据库密码（默认: 123456）: "
+if "%DB_PASSWORD%"=="" set DB_PASSWORD=123456
 
 REM 运行导入脚本
 echo.

@@ -417,7 +417,7 @@ spring:
   datasource:
     url: jdbc:mysql://localhost:3306/legal_qa?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai
     username: root # 修改为你的MySQL用户名
-    password: hjj060618 # 修改为你的MySQL密码
+    password: 123456 # 修改为你的MySQL密码
     driver-class-name: com.mysql.cj.jdbc.Driver
 ```
 

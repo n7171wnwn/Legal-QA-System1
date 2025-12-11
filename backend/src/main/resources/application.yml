@@ -10,7 +10,7 @@ spring:
   datasource:
     url: jdbc:mysql://localhost:3306/legal_qa?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai
     username: root
-    password: hjj060618
+    password: 123456
     driver-class-name: com.mysql.cj.jdbc.Driver
 
   jpa:
@@ -28,7 +28,7 @@ deepseek:
     url: https://api.deepseek.com/v1/chat/completions
     api-key: ${DEEPSEEK_API_KEY:sk-d75528854e8641dba0f96d8878b9c678}
     model: deepseek-chat
-    timeout: 120000  # 120秒，因为DeepSeek API可能响应较慢
+    timeout: 120000 # 120秒，因为DeepSeek API可能响应较慢
 
 # JWT配置
 jwt:

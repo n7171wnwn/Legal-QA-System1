@@ -7,7 +7,7 @@ echo.
 
 cd /d %~dp0
 
-python import_cases_data.py --repo-path E:\Laws\Laws --password hjj060618
+python import_cases_data.py --repo-path E:\Laws\Laws --password 123456
 
 pause
 
