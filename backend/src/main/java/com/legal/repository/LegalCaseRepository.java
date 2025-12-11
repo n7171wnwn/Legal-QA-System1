@@ -14,7 +14,7 @@ public interface LegalCaseRepository extends JpaRepository<LegalCase, Long> {
     List<LegalCase> findByLawType(String lawType);
     List<LegalCase> findByCaseType(String caseType);
     
-    @Query("SELECT lc FROM LegalCase lc WHERE lc.title LIKE %?1% OR lc.disputePoint LIKE %?1%")
+    @Query("SELECT lc FROM LegalCase lc WHERE (lc.title LIKE CONCAT('%', ?1, '%') OR lc.disputePoint LIKE CONCAT('%', ?1, '%'))")
     List<LegalCase> searchByKeyword(String keyword);
 }
 

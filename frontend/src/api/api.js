@@ -1,5 +1,4 @@
 import request from './request'
-import store from '@/store'
 
 // 认证相关
 export const login = (data) => request.post('/auth/login', data)
@@ -7,30 +6,21 @@ export const register = (data) => request.post('/auth/register', data)
 export const uploadAvatar = (file) => {
   const formData = new FormData()
   formData.append('file', file)
-  return request.post('/auth/avatar', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data'
-    }
-  })
+  return request.post('/auth/avatar', formData)
 }
 export const updateProfile = (data) => request.put('/auth/profile', data)
 
 // 问答相关
 export const askQuestion = (data) => request.post('/qa/ask', data)
-export const askQuestionStream = (data, options = {}) => {
-  const headers = {
-    'Content-Type': 'application/json'
-  }
-  const token = store.state.user.token
-  if (token) {
-    headers['Authorization'] = 'Bearer ' + token
-  }
-  
+export const askQuestionStream = (data, config = {}) => {
   return fetch('/api/qa/ask/stream', {
     method: 'POST',
-    headers,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(config.headers || {})
+    },
     body: JSON.stringify(data),
-    signal: options.signal
+    signal: config.signal
   })
 }
 export const getQuestionHistory = (params) => request.get('/qa/history', { params })
@@ -44,6 +34,8 @@ export const searchArticles = (params) => request.get('/legal/article/search', {
 export const getArticlesByType = (lawType) => request.get(`/legal/article/type/${lawType}`)
 export const getArticleById = (id) => request.get(`/legal/article/${id}`)
 export const getAllArticles = () => request.get('/legal/article/all')
+export const getAllTitles = () => request.get('/legal/article/titles')
+export const getArticleStatistics = () => request.get('/legal/article/stats')
 
 // 案例相关
 export const searchCases = (params) => request.get('/legal/case/search', { params })
@@ -75,4 +67,16 @@ export const deleteConcept = (id) => request.delete(`/admin/concept/${id}`)
 
 export const getStats = () => request.get('/admin/stats')
 export const getQARecords = (params) => request.get('/admin/qa', { params })
+export const getQARecord = (id) => request.get(`/admin/qa/${id}`)
+export const deleteQARecord = (id) => request.delete(`/admin/qa/${id}`)
+export const batchDeleteQARecords = (ids) => request.delete('/admin/qa/batch', { data: ids })
+
+// 文件上传相关
+export const uploadFile = (file, type = 'document') => {
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('type', type)
+  // 不设置 Content-Type，让浏览器自动设置（包含 boundary）
+  return request.post('/file/upload', formData)
+}
 

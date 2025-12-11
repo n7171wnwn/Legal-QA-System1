@@ -348,14 +348,15 @@ public class DeepSeekService {
     private String buildSystemPrompt(String context) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("你是一位专业的法律咨询AI助手，具有丰富的法律知识和司法实践经验。");
-        prompt.append("你的任务是回答用户的法律问题，提供准确、专业、易懂的法律建议。");
+        prompt.append("你的任务是直接回答用户的法律问题，提供准确、专业、易懂的法律建议。");
         prompt.append("\n\n");
         prompt.append("回答要求：");
-        prompt.append("1. 回答要准确、专业，基于中国法律法规");
-        prompt.append("2. 语言要通俗易懂，避免过于专业的术语");
-        prompt.append("3. 如果涉及具体法条，要明确指出法条名称和条号");
-        prompt.append("4. 如果是案例分析，要提供相关案例参考");
-        prompt.append("5. 如果问题不够明确，要主动询问以获取更多信息");
+        prompt.append("1. 直接回答问题，不要使用固定的开场白（如\"好的，作为一名专业的法律咨询助手\"等）");
+        prompt.append("2. 回答要准确、专业，基于中国法律法规");
+        prompt.append("3. 语言要通俗易懂，避免过于专业的术语");
+        prompt.append("4. 如果涉及具体法条，要明确指出法条名称和条号");
+        prompt.append("5. 如果是案例分析，要提供相关案例参考");
+        prompt.append("6. 如果问题不够明确，要主动询问以获取更多信息");
         prompt.append("\n\n");
         
         if (context != null && !context.isEmpty()) {
@@ -364,7 +365,7 @@ public class DeepSeekService {
             prompt.append("\n\n");
         }
         
-        prompt.append("请根据以上要求回答用户的问题。");
+        prompt.append("请直接回答用户的问题，不要使用任何开场白或客套话。");
         
         return prompt.toString();
     }
@@ -373,34 +374,48 @@ public class DeepSeekService {
      * 问题分类（简化版，减少API调用）
      */
     public String classifyQuestion(String question) {
-        // 使用简单的关键词匹配，减少API调用
+        // 使用关键词匹配，完全避免API调用以提升速度
         String lowerQuestion = question.toLowerCase();
+        
+        // 法条查询：包含"第X条"、"第X款"等
         if (lowerQuestion.contains("第") && (lowerQuestion.contains("条") || lowerQuestion.contains("款"))) {
             return "法条查询";
         }
-        if (lowerQuestion.contains("是什么") || lowerQuestion.contains("定义") || lowerQuestion.contains("概念")) {
+        
+        // 概念定义：包含"是什么"、"定义"、"概念"、"含义"等
+        if (lowerQuestion.contains("是什么") || lowerQuestion.contains("定义") || 
+            lowerQuestion.contains("概念") || lowerQuestion.contains("含义") ||
+            lowerQuestion.contains("什么意思")) {
             return "概念定义";
         }
-        if (lowerQuestion.contains("怎么") || lowerQuestion.contains("如何") || lowerQuestion.contains("流程") || lowerQuestion.contains("程序")) {
+        
+        // 程序咨询：包含"怎么"、"如何"、"流程"、"程序"、"步骤"等
+        if (lowerQuestion.contains("怎么") || lowerQuestion.contains("如何") || 
+            lowerQuestion.contains("流程") || lowerQuestion.contains("程序") ||
+            lowerQuestion.contains("步骤") || lowerQuestion.contains("怎么办")) {
             return "程序咨询";
         }
-        if (lowerQuestion.contains("案例") || lowerQuestion.contains("判例") || lowerQuestion.contains("判决")) {
+        
+        // 案例分析：包含"案例"、"判例"、"判决"、"判刑"等
+        if (lowerQuestion.contains("案例") || lowerQuestion.contains("判例") || 
+            lowerQuestion.contains("判决") || lowerQuestion.contains("判刑") ||
+            lowerQuestion.contains("量刑")) {
             return "案例分析";
         }
         
-        // 如果关键词匹配失败，再调用API（但使用更短的提示词）
-        try {
-            String prompt = "分类：" + question.substring(0, Math.min(100, question.length()));
-            String result = generateAnswerWithRetry(prompt, "只返回：法条查询、概念定义、程序咨询、案例分析、其他", 2);
-            return extractCategory(result);
-        } catch (Exception e) {
-            log.warn("问题分类失败，使用默认分类", e);
-            return "其他";
+        // 法律咨询：包含"可以"、"能否"、"是否"、"需要"等咨询类词汇
+        if (lowerQuestion.contains("可以") || lowerQuestion.contains("能否") || 
+            lowerQuestion.contains("是否") || lowerQuestion.contains("需要") ||
+            lowerQuestion.contains("应该") || lowerQuestion.contains("必须")) {
+            return "法律咨询";
         }
+        
+        // 默认返回"其他"，不再调用API
+        return "其他";
     }
     
     /**
-     * 实体识别（简化版，减少API调用）
+     * 实体识别（优化版，完全避免API调用，使用规则匹配）
      */
     public Map<String, List<String>> extractEntities(String question) {
         Map<String, List<String>> entities = new HashMap<>();
@@ -409,29 +424,104 @@ public class DeepSeekService {
         entities.put("organizations", new ArrayList<>());
         entities.put("concepts", new ArrayList<>());
         
-        // 简单的实体提取（基于关键词）
-        // 提取法条名称（包含《》的内容）
+        // 1. 提取法条名称（包含《》的内容）
         java.util.regex.Pattern lawPattern = java.util.regex.Pattern.compile("《([^》]+)》");
         java.util.regex.Matcher lawMatcher = lawPattern.matcher(question);
         while (lawMatcher.find()) {
             entities.get("laws").add(lawMatcher.group(1));
         }
         
-        // 如果简单提取失败，再调用API（但使用更短的提示词）
-        if (entities.get("laws").isEmpty()) {
-            try {
-                String prompt = "提取实体：" + question.substring(0, Math.min(100, question.length()));
-                String result = generateAnswerWithRetry(prompt, "返回JSON：{\"laws\":[],\"crimes\":[],\"organizations\":[],\"concepts\":[]}", 2);
-                Map<String, List<String>> apiEntities = parseEntities(result);
-                // 合并结果
-                entities.get("laws").addAll(apiEntities.getOrDefault("laws", new ArrayList<>()));
-                entities.get("crimes").addAll(apiEntities.getOrDefault("crimes", new ArrayList<>()));
-                entities.get("organizations").addAll(apiEntities.getOrDefault("organizations", new ArrayList<>()));
-                entities.get("concepts").addAll(apiEntities.getOrDefault("concepts", new ArrayList<>()));
-            } catch (Exception e) {
-                log.warn("实体识别失败", e);
+        // 2. 先使用关键词列表匹配（更精确，避免误匹配）
+        // 按长度从长到短排序，优先匹配更长的法律名称
+        String[] commonLawKeywords = {"中华人民共和国未成年人保护法", "未成年人保护法", "未成年保护法",
+                                     "中华人民共和国民法典", "民法典",
+                                     "中华人民共和国刑法", "刑法",
+                                     "中华人民共和国劳动法", "劳动法",
+                                     "中华人民共和国劳动合同法", "劳动合同法",
+                                     "中华人民共和国婚姻法", "婚姻法",
+                                     "中华人民共和国继承法", "继承法",
+                                     "中华人民共和国侵权责任法", "侵权责任法",
+                                     "中华人民共和国物权法", "物权法",
+                                     "中华人民共和国行政法", "行政法",
+                                     "中华人民共和国宪法", "宪法",
+                                     "中华人民共和国刑事诉讼法", "刑事诉讼法",
+                                     "中华人民共和国民事诉讼法", "民事诉讼法",
+                                     "中华人民共和国公司法", "公司法",
+                                     "中华人民共和国证券法", "证券法",
+                                     "中华人民共和国环境保护法", "环境保护法",
+                                     "中华人民共和国食品安全法", "食品安全法",
+                                     "中华人民共和国消费者权益保护法", "消费者权益保护法",
+                                     "中华人民共和国反垄断法", "反垄断法",
+                                     "合同法", "民法"};
+        java.util.Arrays.sort(commonLawKeywords, (a, b) -> Integer.compare(b.length(), a.length()));
+        for (String keyword : commonLawKeywords) {
+            if (question.contains(keyword) && !entities.get("laws").contains(keyword)) {
+                entities.get("laws").add(keyword);
+                break; // 找到一个就停止，避免重复
             }
         }
+        
+        // 3. 如果关键词匹配失败，使用正则表达式匹配"XXX法"、"XXX条例"等格式
+        if (entities.get("laws").isEmpty()) {
+            // 优化正则：匹配法律名称，排除前面的动词
+            // 匹配模式：不包含"讲讲"、"说说"等动词，直接匹配法律名称
+            java.util.regex.Pattern lawNamePattern = java.util.regex.Pattern.compile("(?:^|[^讲说介绍解])([^，。！？、\\s]{1,15}(?:法|条例|规定|办法|规则|细则))");
+            java.util.regex.Matcher lawNameMatcher = lawNamePattern.matcher(question);
+            while (lawNameMatcher.find()) {
+                String lawName = lawNameMatcher.group(1);
+                // 进一步过滤：确保不是以动词开头
+                if (lawName != null && !lawName.startsWith("讲") && !lawName.startsWith("说") && 
+                    !lawName.startsWith("介") && !lawName.startsWith("解") &&
+                    lawName.length() >= 2 && lawName.length() <= 30 && 
+                    !entities.get("laws").contains(lawName)) {
+                    entities.get("laws").add(lawName);
+                }
+            }
+        }
+        
+        // 4. 提取常见罪名（基于关键词）
+        String[] crimeKeywords = {"故意杀人", "故意伤害", "盗窃", "抢劫", "诈骗", "贪污", "受贿", 
+                                 "交通肇事", "危险驾驶", "寻衅滋事", "聚众斗殴"};
+        for (String keyword : crimeKeywords) {
+            if (question.contains(keyword)) {
+                entities.get("crimes").add(keyword);
+            }
+        }
+        
+        // 5. 提取常见机构（基于关键词）
+        String[] orgKeywords = {"法院", "检察院", "公安局", "派出所", "司法局", "律师事务所", 
+                               "仲裁委员会", "工商局", "税务局", "劳动局"};
+        for (String keyword : orgKeywords) {
+            if (question.contains(keyword)) {
+                entities.get("organizations").add(keyword);
+            }
+        }
+        
+        // 6. 提取常见法律概念（基于关键词）
+        String[] conceptKeywords = {"合同", "劳动合同", "侵权", "违约", "责任", "权利", "义务", "所有权", 
+                                   "债权", "债务", "继承", "遗嘱", "离婚", "抚养", "工资", "加班",
+                                   "社保", "解除", "赔偿", "补偿", "仲裁", "诉讼"};
+        for (String keyword : conceptKeywords) {
+            // 优先匹配更长的关键词
+            if (question.contains(keyword) && !entities.get("concepts").contains(keyword)) {
+                // 检查是否已经作为法律名称被识别（避免重复）
+                boolean isLaw = false;
+                for (String law : entities.get("laws")) {
+                    if (law.contains(keyword) || keyword.contains(law)) {
+                        isLaw = true;
+                        break;
+                    }
+                }
+                if (!isLaw) {
+                    entities.get("concepts").add(keyword);
+                }
+            }
+        }
+        
+        // 不再调用API，完全基于规则匹配，大幅提升速度
+        log.debug("实体识别完成（规则匹配），laws: {}, crimes: {}, organizations: {}, concepts: {}", 
+                 entities.get("laws").size(), entities.get("crimes").size(), 
+                 entities.get("organizations").size(), entities.get("concepts").size());
         
         return entities;
     }

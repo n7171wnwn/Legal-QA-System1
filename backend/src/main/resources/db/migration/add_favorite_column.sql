@@ -9,3 +9,15 @@ CREATE INDEX IF NOT EXISTS idx_user_favorite ON question_answers(user_id, is_fav
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+

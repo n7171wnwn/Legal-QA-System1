@@ -36,9 +36,18 @@ public class QuestionAnswerController {
     public ApiResponse<Map<String, Object>> askQuestion(
             @RequestBody Map<String, String> request,
             HttpServletRequest httpRequest) {
+        long startTime = System.currentTimeMillis();
         try {
+            log.info("收到提问请求，question: {}", request.get("question"));
+            
             String question = request.get("question");
+            if (question == null || question.trim().isEmpty()) {
+                log.warn("问题为空");
+                return ApiResponse.error("问题不能为空");
+            }
+            
             String sessionId = request.getOrDefault("sessionId", generateSessionId());
+            log.info("Session ID: {}", sessionId);
             
             String token = httpRequest.getHeader("Authorization");
             Long userId = null;
@@ -46,13 +55,18 @@ public class QuestionAnswerController {
                 token = token.substring(7);
                 if (jwtUtil.validateToken(token)) {
                     userId = jwtUtil.getUserIdFromToken(token);
+                    log.info("用户ID: {}", userId);
                 }
             }
             
+            log.info("开始处理问题...");
             Map<String, Object> result = questionAnswerService.processQuestion(question, userId, sessionId);
+            long duration = System.currentTimeMillis() - startTime;
+            log.info("问题处理完成，耗时: {}ms", duration);
             return ApiResponse.success(result);
         } catch (Exception e) {
-            log.error("处理问题失败", e);
+            long duration = System.currentTimeMillis() - startTime;
+            log.error("处理问题失败，耗时: {}ms", duration, e);
             return ApiResponse.error("处理问题失败：" + e.getMessage());
         }
     }

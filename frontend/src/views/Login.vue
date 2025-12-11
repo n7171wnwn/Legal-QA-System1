@@ -83,7 +83,11 @@ export default {
           this.loading = true
           try {
             await this.$store.dispatch('user/login', this.loginForm)
-            this.$message.success('登录成功')
+            this.$message({
+              message: '登录成功',
+              type: 'success',
+              duration: 1500
+            })
             const redirect = this.$route.query.redirect || '/home'
             this.$router.push(redirect)
           } catch (error) {
@@ -100,7 +104,11 @@ export default {
           this.loading = true
           try {
             await this.$store.dispatch('user/register', this.registerForm)
-            this.$message.success('注册成功')
+            this.$message({
+              message: '注册成功',
+              type: 'success',
+              duration: 1500
+            })
             const redirect = this.$route.query.redirect || '/home'
             this.$router.push(redirect)
           } catch (error) {

@@ -13,34 +13,49 @@ import java.util.Optional;
 
 @Service
 public class LegalArticleService {
-    
+
     @Autowired
     private LegalArticleRepository legalArticleRepository;
-    
+
     public Page<LegalArticle> searchArticles(String keyword, Pageable pageable) {
         return legalArticleRepository.findByTitleContainingOrContentContaining(keyword, keyword, pageable);
     }
-    
+
     public List<LegalArticle> getArticlesByLawType(String lawType) {
         return legalArticleRepository.findByLawType(lawType);
     }
-    
+
     public List<LegalArticle> getAllValidArticles() {
         return legalArticleRepository.findByIsValidTrue();
     }
-    
+
     public Optional<LegalArticle> getArticleById(Long id) {
         return legalArticleRepository.findById(id);
     }
-    
+
     @Transactional
     public LegalArticle saveArticle(LegalArticle article) {
         return legalArticleRepository.save(article);
     }
-    
+
     @Transactional
     public void deleteArticle(Long id) {
         legalArticleRepository.deleteById(id);
     }
-}
 
+    public List<String> getAllDistinctTitles() {
+        return legalArticleRepository.findAllDistinctTitles(true);
+    }
+
+    public Long getTotalArticleCount() {
+        return legalArticleRepository.countAllValidArticles(true);
+    }
+
+    public Long getTotalLawCount() {
+        return legalArticleRepository.countDistinctTitles(true);
+    }
+
+    public List<LegalArticle> getMinorProtectionLaws() {
+        return legalArticleRepository.findByTitleContainingAndIsValidTrue("未成年");
+    }
+}

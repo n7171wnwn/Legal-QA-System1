@@ -43,14 +43,45 @@
           </div>
         </div>
         <div class="chat-input-area">
-          <el-input
-            v-model="currentQuestion"
-            type="textarea"
-            :rows="3"
-            placeholder="请输入您的问题...（按Enter发送，Shift+Enter换行）"
-            :disabled="loading"
-            @keydown.enter.native="handleKeyDown"
-          ></el-input>
+          <div v-if="uploadedFile" class="uploaded-file-info">
+            <div class="file-info-left">
+              <i :class="uploadedFile.type === 'image' ? 'el-icon-picture' : 'el-icon-document'"></i>
+              <div class="file-details">
+                <span class="file-name">{{ uploadedFile.fileName }}</span>
+                <span class="file-hint">正在分析此文件，您可以继续针对此文件提问</span>
+              </div>
+            </div>
+            <el-button size="mini" type="text" icon="el-icon-close" @click="handleRemoveFile" title="移除文件"></el-button>
+          </div>
+          <div class="input-wrapper">
+            <el-upload
+              ref="chatUpload"
+              :http-request="handleChatUpload"
+              :before-upload="beforeChatUpload"
+              :show-file-list="false"
+              accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.gif,.bmp,.webp"
+              class="upload-btn-wrapper"
+            >
+              <el-button 
+                size="small" 
+                icon="el-icon-upload" 
+                :disabled="loading || uploading" 
+                :loading="uploading"
+                circle
+                class="upload-btn"
+                title="上传文件（合同、证据图片等）"
+              ></el-button>
+            </el-upload>
+            <el-input
+              v-model="currentQuestion"
+              type="textarea"
+              :rows="3"
+              :placeholder="uploadedFile ? '请输入您的问题，将自动关联当前文件...（按Enter发送，Shift+Enter换行）' : '请输入您的问题...（按Enter发送，Shift+Enter换行）'"
+              :disabled="loading"
+              @keydown.enter.native="handleKeyDown"
+              class="question-textarea-input"
+            ></el-input>
+          </div>
           <div class="input-actions">
             <el-button @click="handleSend" type="primary" :loading="loading" :disabled="loading">发送</el-button>
             <el-button @click="handleClear" :disabled="loading">清空</el-button>
@@ -129,7 +160,7 @@
 
 <script>
 import NavBar from '@/components/NavBar.vue'
-import { askQuestion, askQuestionStream, submitFeedback, getConversationHistory, toggleFavorite } from '@/api/api'
+import { askQuestion, askQuestionStream, submitFeedback, getConversationHistory, toggleFavorite, uploadFile } from '@/api/api'
 import { marked } from 'marked'
 
 marked.setOptions({
@@ -158,10 +189,21 @@ export default {
       caseDialogVisible: false,
       selectedLaw: null,
       selectedCase: null,
-      currentRequestController: null
+      currentRequestController: null,
+      uploadedFile: null, // 存储上传的文件信息
+      uploading: false // 文件上传中状态
     }
   },
   async mounted() {
+    // 如果传递了文件信息，保存文件信息
+    if (this.$route.query.fileUrl && this.$route.query.fileName) {
+      this.uploadedFile = {
+        url: this.$route.query.fileUrl,
+        fileName: this.$route.query.fileName,
+        type: this.$route.query.fileType || 'document'
+      }
+    }
+    
     // 如果传递了sessionId，加载历史对话记录
     if (this.$route.query.sessionId) {
       await this.loadConversationHistory(this.$route.query.sessionId)
@@ -190,13 +232,19 @@ export default {
         return
       }
 
+      // 如果有上传的文件，将文件信息添加到问题中
+      let questionText = this.currentQuestion
+      if (this.uploadedFile) {
+        questionText = `${this.currentQuestion}\n\n[附件：${this.uploadedFile.fileName} - ${this.uploadedFile.url}]`
+      }
+
       const userMessage = {
         type: 'user',
         content: this.currentQuestion
       }
       this.messages.push(userMessage)
 
-      const question = this.currentQuestion
+      const question = questionText
       this.currentQuestion = ''
       this.loading = true
       this.resetSidebar()
@@ -257,11 +305,123 @@ export default {
         this.currentRequestController.abort()
         this.currentRequestController = null
       }
-      this.messages = []
-      this.currentRelatedLaws = []
-      this.currentRelatedCases = []
-      this.currentEntities = {}
-      this.loading = false
+      
+      // 如果有关联的文件，询问是否保留文件信息
+      if (this.uploadedFile) {
+        this.$confirm('清空对话后，文件信息也会被移除。是否继续？', '提示', {
+          confirmButtonText: '清空并移除文件',
+          cancelButtonText: '取消',
+          type: 'warning'
+        }).then(() => {
+          this.messages = []
+          this.currentRelatedLaws = []
+          this.currentRelatedCases = []
+          this.currentEntities = {}
+          this.uploadedFile = null
+          this.loading = false
+          this.$message.success('对话已清空')
+        }).catch(() => {
+          // 用户取消，不做任何操作
+        })
+      } else {
+        this.messages = []
+        this.currentRelatedLaws = []
+        this.currentRelatedCases = []
+        this.currentEntities = {}
+        this.loading = false
+      }
+    },
+    handleRemoveFile() {
+      this.$confirm('移除文件后，后续提问将不再关联此文件。是否继续？', '提示', {
+        confirmButtonText: '移除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }).then(() => {
+        this.uploadedFile = null
+        this.$message({
+          message: '文件已移除',
+          type: 'success',
+          duration: 3000
+        })
+      }).catch(() => {
+        // 用户取消，不做任何操作
+      })
+    },
+    beforeChatUpload(file) {
+      // 检查文件类型
+      const isImage = /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(file.name)
+      const isDocument = /\.(pdf|doc|docx|txt)$/i.test(file.name)
+      
+      if (!isImage && !isDocument) {
+        this.$message.error('文件格式不支持！仅支持图片（jpg, jpeg, png, gif, bmp, webp）和文档（pdf, doc, docx, txt）')
+        return false
+      }
+      
+      // 检查文件大小（10MB）
+      const isLt10M = file.size / 1024 / 1024 < 10
+      if (!isLt10M) {
+        this.$message.error('文件大小不能超过 10MB！')
+        return false
+      }
+      
+      return true
+    },
+    async handleChatUpload(options) {
+      try {
+        const file = options.file
+        this.uploading = true
+        
+        // 根据文件类型自动判断
+        const isImage = /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(file.name)
+        const type = isImage ? 'image' : 'document'
+        
+        const response = await uploadFile(file, type)
+        
+        if (response.code === 200) {
+          const fileInfo = response.data
+          
+          // 如果已有文件，询问是否替换
+          if (this.uploadedFile) {
+            this.$confirm(`已有关联文件：${this.uploadedFile.fileName}，是否替换为新文件？`, '提示', {
+              confirmButtonText: '替换',
+              cancelButtonText: '取消',
+              type: 'info'
+            }).then(() => {
+              this.uploadedFile = {
+                url: fileInfo.url,
+                fileName: fileInfo.originalFilename,
+                type: fileInfo.type
+              }
+              this.$message({
+                message: `文件上传成功！已替换为：${fileInfo.originalFilename}，后续提问将关联此文件`,
+                type: 'success',
+                duration: 3000
+              })
+            }).catch(() => {
+              // 用户取消，不做任何操作
+            })
+          } else {
+            // 直接关联新文件
+            this.uploadedFile = {
+              url: fileInfo.url,
+              fileName: fileInfo.originalFilename,
+              type: fileInfo.type
+            }
+            this.$message({
+              message: `文件上传成功！已关联文件：${fileInfo.originalFilename}，后续提问将自动关联此文件`,
+              type: 'success',
+              duration: 3000
+            })
+          }
+        } else {
+          this.$message.error(response.message || '上传失败')
+        }
+      } catch (error) {
+        console.error('上传错误:', error)
+        this.$message.error('文件上传失败，请重试')
+      } finally {
+        this.uploading = false
+      }
     },
     handleFeedback(qaId, type) {
       submitFeedback({
@@ -440,10 +600,11 @@ export default {
       this.currentRequestController = controller
       let timedOut = false
       let hasReceivedChunk = false
+      // 增加超时时间到120秒，因为DeepSeek API可能响应较慢
       const timeoutId = setTimeout(() => {
         timedOut = true
         controller.abort()
-      }, 8000)
+      }, 120000)
       const response = await askQuestionStream(
         {
           question,
@@ -835,8 +996,43 @@ export default {
   border-top: 1px solid #eee;
 }
 
+.input-wrapper {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.upload-btn-wrapper {
+  flex-shrink: 0;
+}
+
+.upload-btn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid #dcdfe6;
+  background: #fff;
+  color: #606266;
+  transition: all 0.3s;
+}
+
+.upload-btn:hover {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+  background: #f0f9ff;
+}
+
+.upload-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.question-textarea-input {
+  flex: 1;
+}
+
 .input-actions {
-  margin-top: 10px;
   display: flex;
   justify-content: flex-end;
   gap: 10px;
@@ -910,5 +1106,63 @@ export default {
   padding: 20px;
   font-size: 14px;
 }
-</style>
 
+.uploaded-file-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+  border: 1px solid #bae6fd;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  font-size: 14px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.uploaded-file-info .file-info-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.uploaded-file-info i {
+  color: var(--primary-color);
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.uploaded-file-info .file-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.uploaded-file-info .file-name {
+  color: #333;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uploaded-file-info .file-hint {
+  color: #666;
+  font-size: 12px;
+}
+
+.uploaded-file-info .el-button {
+  padding: 4px;
+  color: #999;
+  flex-shrink: 0;
+}
+
+.uploaded-file-info .el-button:hover {
+  color: #f56c6c;
+}
+</style>

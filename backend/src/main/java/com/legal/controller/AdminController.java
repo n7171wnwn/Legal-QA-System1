@@ -195,5 +195,29 @@ public class AdminController {
         }
         return ApiResponse.success(questionAnswerRepository.findAll(pageable));
     }
+    
+    @GetMapping("/qa/{id}")
+    public ApiResponse<QuestionAnswer> getQARecord(@PathVariable Long id) {
+        return ApiResponse.success(questionAnswerRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("问答记录不存在")));
+    }
+    
+    @DeleteMapping("/qa/{id}")
+    public ApiResponse<?> deleteQARecord(@PathVariable Long id) {
+        if (!questionAnswerRepository.existsById(id)) {
+            return ApiResponse.error("问答记录不存在");
+        }
+        questionAnswerRepository.deleteById(id);
+        return ApiResponse.success("删除成功");
+    }
+    
+    @DeleteMapping("/qa/batch")
+    public ApiResponse<?> batchDeleteQARecords(@RequestBody List<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return ApiResponse.error("请选择要删除的记录");
+        }
+        questionAnswerRepository.deleteAllById(ids);
+        return ApiResponse.success("批量删除成功");
+    }
 }
 

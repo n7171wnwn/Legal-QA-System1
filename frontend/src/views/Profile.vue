@@ -3,6 +3,50 @@
     <NavBar />
     <div class="profile-container">
       <el-tabs v-model="activeTab">
+        <el-tab-pane label="个人信息" name="info">
+          <el-card>
+            <div class="user-info">
+              <div class="avatar-section">
+                <el-avatar 
+                  :size="100" 
+                  :src="avatarUrl"
+                  :icon="!avatarUrl ? 'el-icon-user-solid' : ''"
+                ></el-avatar>
+                <el-upload
+                  class="avatar-uploader"
+                  action="#"
+                  :show-file-list="false"
+                  :before-upload="beforeAvatarUpload"
+                  :http-request="handleAvatarUpload"
+                  accept="image/*"
+                >
+                  <el-button style="margin-top: 20px;" :loading="avatarUploading">
+                    {{ avatarUploading ? '上传中...' : '更换头像' }}
+                  </el-button>
+                </el-upload>
+              </div>
+              <div class="info-section">
+                <el-form label-width="100px">
+                  <el-form-item label="用户名">
+                    <el-input v-model="userInfo.username" disabled></el-input>
+                  </el-form-item>
+                  <el-form-item label="昵称">
+                    <el-input v-model="userInfo.nickname"></el-input>
+                  </el-form-item>
+                  <el-form-item label="邮箱">
+                    <el-input v-model="userInfo.email"></el-input>
+                  </el-form-item>
+                  <el-form-item label="手机号">
+                    <el-input v-model="userInfo.phone"></el-input>
+                  </el-form-item>
+                  <el-form-item>
+                    <el-button type="primary" @click="saveUserInfo">保存</el-button>
+                  </el-form-item>
+                </el-form>
+              </div>
+            </div>
+          </el-card>
+        </el-tab-pane>
         <el-tab-pane label="问答历史" name="history">
           <div class="history-list">
             <el-card
@@ -65,50 +109,6 @@
             ></el-pagination>
           </div>
         </el-tab-pane>
-        <el-tab-pane label="个人信息" name="info">
-          <el-card>
-            <div class="user-info">
-              <div class="avatar-section">
-                <el-avatar 
-                  :size="100" 
-                  :src="avatarUrl"
-                  :icon="!avatarUrl ? 'el-icon-user-solid' : ''"
-                ></el-avatar>
-                <el-upload
-                  class="avatar-uploader"
-                  action="#"
-                  :show-file-list="false"
-                  :before-upload="beforeAvatarUpload"
-                  :http-request="handleAvatarUpload"
-                  accept="image/*"
-                >
-                  <el-button style="margin-top: 20px;" :loading="avatarUploading">
-                    {{ avatarUploading ? '上传中...' : '更换头像' }}
-                  </el-button>
-                </el-upload>
-              </div>
-              <div class="info-section">
-                <el-form label-width="100px">
-                  <el-form-item label="用户名">
-                    <el-input v-model="userInfo.username" disabled></el-input>
-                  </el-form-item>
-                  <el-form-item label="昵称">
-                    <el-input v-model="userInfo.nickname"></el-input>
-                  </el-form-item>
-                  <el-form-item label="邮箱">
-                    <el-input v-model="userInfo.email"></el-input>
-                  </el-form-item>
-                  <el-form-item label="手机号">
-                    <el-input v-model="userInfo.phone"></el-input>
-                  </el-form-item>
-                  <el-form-item>
-                    <el-button type="primary" @click="saveUserInfo">保存</el-button>
-                  </el-form-item>
-                </el-form>
-              </div>
-            </div>
-          </el-card>
-        </el-tab-pane>
       </el-tabs>
     </div>
   </div>
@@ -125,7 +125,7 @@ export default {
   },
   data() {
     return {
-      activeTab: 'history',
+      activeTab: 'info', // 默认显示个人信息
       historyList: [],
       historyPage: 1,
       historyPageSize: 10,
@@ -135,27 +135,30 @@ export default {
       favoritesPageSize: 10,
       favoritesTotal: 0,
       userInfo: {},
-      avatarUploading: false
+      avatarUploading: false,
+      avatarKey: 0 // 用于强制刷新头像
     }
   },
   computed: {
     avatarUrl() {
+      // 使用avatarKey强制刷新
+      const key = this.avatarKey
       if (this.userInfo && this.userInfo.avatar) {
         const avatar = this.userInfo.avatar
         // 如果是完整URL，直接返回
         if (avatar.startsWith('http')) {
-          return avatar
+          return avatar + '?t=' + key
         }
         // 如果已经是/api/uploads/开头，直接返回
         if (avatar.startsWith('/api/uploads/')) {
-          return avatar
+          return avatar + '?t=' + key
         }
         // 如果以/uploads/开头，添加/api前缀
         if (avatar.startsWith('/uploads/')) {
-          return '/api' + avatar
+          return '/api' + avatar + '?t=' + key
         }
         // 否则，假设是文件名，添加完整路径
-        return `/api/uploads/${avatar}`
+        return `/api/uploads/${avatar}?t=${key}`
       }
       return null
     }
@@ -212,15 +215,24 @@ export default {
       this.avatarUploading = true
       try {
         const response = await uploadAvatar(options.file)
-        if (response.data && response.data.avatar) {
+        if (response && response.code === 200 && response.data && response.data.avatar) {
           // 更新本地用户信息
-          this.userInfo = { ...this.userInfo, avatar: response.data.avatar }
+          const avatarPath = response.data.avatar
+          this.userInfo = { ...this.userInfo, avatar: avatarPath }
           // 更新store中的用户信息
-          this.$store.commit('user/UPDATE_USER_INFO', { avatar: response.data.avatar })
+          this.$store.commit('user/UPDATE_USER_INFO', { avatar: avatarPath })
+          // 强制刷新头像显示
+          this.avatarKey = Date.now()
           this.$message.success('头像上传成功')
+          // 强制更新视图
+          this.$forceUpdate()
+        } else {
+          this.$message.error((response && response.message) || '头像上传失败')
         }
       } catch (error) {
-        this.$message.error('头像上传失败：' + (error.message || '网络错误'))
+        console.error('头像上传错误:', error)
+        const errorMessage = (error.response && error.response.data && error.response.data.message) || error.message || '网络错误'
+        this.$message.error('头像上传失败：' + errorMessage)
       } finally {
         this.avatarUploading = false
       }
@@ -232,14 +244,18 @@ export default {
           email: this.userInfo.email,
           phone: this.userInfo.phone
         })
-        if (response.data) {
+        if (response && response.code === 200 && response.data) {
           this.userInfo = response.data
           // 更新store中的用户信息
           this.$store.commit('user/UPDATE_USER_INFO', this.userInfo)
           this.$message.success('保存成功')
+        } else {
+          this.$message.error((response && response.message) || '保存失败')
         }
       } catch (error) {
-        this.$message.error('保存失败：' + (error.message || '网络错误'))
+        console.error('保存用户信息错误:', error)
+        const errorMessage = (error.response && error.response.data && error.response.data.message) || error.message || '网络错误'
+        this.$message.error('保存失败：' + errorMessage)
       }
     },
     formatDate(date) {
