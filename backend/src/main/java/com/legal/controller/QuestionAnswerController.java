@@ -111,11 +111,20 @@ public class QuestionAnswerController {
                 if (chunk == null || chunk.isEmpty()) {
                     return;
                 }
+                // 移除 \r（Windows换行符），保留 \n（因为 \n 需要被正确传递到前端）
                 String sanitized = chunk.replace("\r", "");
-                String[] lines = sanitized.split("\n");
-                for (String line : lines) {
-                    writer.write("data: " + line + "\n");
+                
+                // SSE 格式要求：每个 data 行必须以 "data: " 开头，且内容不能包含换行符
+                // 因此，如果 chunk 包含换行符，需要按换行符分割，每行作为独立的 data 行发送
+                // 使用 split("\n", -1) 的 -1 参数可以保留末尾空字符串，这对于保留空行很重要
+                // 例如："第一行\n\n第二行" 会被分割为 ["第一行", "", "第二行"]
+                // 前端会将多个 data 行用换行符连接起来，恢复原始内容
+                String[] lines = sanitized.split("\n", -1);
+                
+                for (int i = 0; i < lines.length; i++) {
+                    writer.write("data: " + lines[i] + "\n");
                 }
+                // SSE 消息结束标记（空行）
                 writer.write("\n");
                 writer.flush();
             };

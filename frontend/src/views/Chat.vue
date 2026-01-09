@@ -16,9 +16,17 @@
             </div>
             <div class="message-content" v-else>
               <div class="message-bubble bot-bubble">
-                <div class="bot-loading-indicator" v-if="message.isLoading">
+                <div class="bot-loading-indicator" v-if="message.isLoading || message.isStreaming">
                   <i class="el-icon-loading"></i>
                   <span>{{ message.isStreaming ? '正在生成回答...' : '正在思考中...' }}</span>
+                  <el-button 
+                    v-if="message.isStreaming && currentRequestController" 
+                    size="mini" 
+                    type="danger" 
+                    icon="el-icon-close" 
+                    @click="stopStreaming(message)"
+                    style="margin-left: 10px;"
+                  >停止生成</el-button>
                 </div>
                 <div class="confidence-indicator" v-if="message.confidenceScore">
                   <span class="confidence-label">可信度：</span>
@@ -31,7 +39,7 @@
                 <div
                   v-if="message.answer"
                   class="answer-content"
-                  v-html="formatAnswer(message.answer)"
+                  v-html="formatAnswer(message.answer, message.isStreaming, message.id)"
                 ></div>
                 <div class="message-actions">
                   <el-button size="mini" icon="el-icon-thumb" @click="handleFeedback(message.id, 'positive')">有用</el-button>
@@ -56,6 +64,7 @@
           <div class="input-wrapper">
             <el-upload
               ref="chatUpload"
+              action=""
               :http-request="handleChatUpload"
               :before-upload="beforeChatUpload"
               :show-file-list="false"
@@ -142,7 +151,7 @@
     <el-dialog title="法条详情" :visible.sync="lawDialogVisible" width="60%">
       <div v-if="selectedLaw">
         <h3>{{ selectedLaw.title }}<span v-if="formatArticleNumber(selectedLaw.articleNumber)"> {{ formatArticleNumber(selectedLaw.articleNumber) }}</span></h3>
-        <p>{{ selectedLaw.content }}</p>
+        <p>{{ cleanLawContent(selectedLaw.content) }}</p>
       </div>
     </el-dialog>
 
@@ -161,15 +170,7 @@
 <script>
 import NavBar from '@/components/NavBar.vue'
 import { askQuestion, askQuestionStream, submitFeedback, getConversationHistory, toggleFavorite, uploadFile } from '@/api/api'
-import { marked } from 'marked'
-
-marked.setOptions({
-  gfm: true,
-  breaks: true,
-  smartLists: true,
-  headerIds: false,
-  mangle: false
-})
+import md from '@/utils/markdownRenderer'
 
 export default {
   name: 'Chat',
@@ -191,7 +192,9 @@ export default {
       selectedCase: null,
       currentRequestController: null,
       uploadedFile: null, // 存储上传的文件信息
-      uploading: false // 文件上传中状态
+      uploading: false, // 文件上传中状态
+      markdownParseTimers: {}, // 存储每个消息的防抖定时器
+      markdownCache: {} // 缓存已解析的Markdown内容
     }
   },
   async mounted() {
@@ -212,6 +215,15 @@ export default {
       this.currentQuestion = this.$route.query.question
       this.handleSend()
     }
+  },
+  beforeDestroy() {
+    // 清理所有防抖定时器
+    Object.values(this.markdownParseTimers).forEach(timer => {
+      if (timer) clearTimeout(timer)
+    })
+    this.markdownParseTimers = {}
+    // 清理缓存
+    this.markdownCache = {}
   },
   methods: {
     handleKeyDown(event) {
@@ -299,6 +311,45 @@ export default {
     },
     isAbortError(error) {
       return error && (error.name === 'AbortError' || error.message === 'The user aborted a request.')
+    },
+    /**
+     * 停止流式输出
+     * 终止当前请求并确保Markdown格式正确转换
+     */
+    stopStreaming(botMessage) {
+      if (this.currentRequestController) {
+        // 标记为主动终止，避免finally块重复处理
+        botMessage._aborted = true
+        
+        // 终止请求
+        this.currentRequestController.abort()
+        this.currentRequestController = null
+        
+        // 更新消息状态
+        botMessage.isLoading = false
+        botMessage.isStreaming = false
+        
+        // 清除防抖定时器
+        const messageIndex = this.messages.findIndex(msg => msg === botMessage)
+        const timerKey = botMessage.id || `msg_${messageIndex}`
+        if (this.markdownParseTimers[timerKey]) {
+          clearTimeout(this.markdownParseTimers[timerKey])
+          delete this.markdownParseTimers[timerKey]
+        }
+        
+        // 清除缓存，确保使用完整解析模式
+        if (botMessage.id) {
+          delete this.markdownCache[botMessage.id]
+        }
+        
+        // 强制更新视图，使用完整解析模式（isStreaming 已设为 false）
+        this.$nextTick(() => {
+          this.$forceUpdate()
+        })
+        
+        this.loading = false
+        this.$message.info('已停止生成，当前内容已保存')
+      }
     },
     handleClear() {
       if (this.currentRequestController) {
@@ -447,13 +498,363 @@ export default {
           this.$message.error('收藏操作失败：' + (error.message || '网络错误'))
         })
     },
-    formatAnswer(answer) {
+    formatAnswer(answer, isStreaming = false, messageId = null) {
       if (!answer) return ''
-      const normalized = this.preprocessAnswer(answer)
-      const html = marked.parse(normalized)
-      return html
+
+      // 调试用：打印当前拿到的原始 Markdown 文本（流式和非流式都打印）
+      try {
+        // 避免在生产环境长期刷日志，如有需要可以加条件判断
+        // console.groupCollapsed && console.groupCollapsed('RAW_MD')
+        console.log('RAW_MD ===>', {
+          isStreaming,
+          messageId,
+          text: answer
+        })
+        // console.groupEnd && console.groupEnd()
+      } catch (e) {
+        // 打印失败不影响正常渲染
+      }
+
+      // 如果不是流式输出，使用缓存
+      if (!isStreaming && messageId && this.markdownCache[messageId]) {
+        return this.markdownCache[messageId]
+      }
+      
+      // 如果是流式输出模式，使用分段解析策略
+      const html = isStreaming 
+        ? this.parseMarkdownIncremental(answer)
+        : this.parseMarkdownComplete(answer)
+      
+      const finalHtml = html
         .replace(/《([^》]+)》/g, '<span class="law-highlight">《$1》</span>')
         .replace(/第([一二三四五六七八九十百千\d]+)条/g, '<span class="article-highlight">第$1条</span>')
+      
+      // 缓存完整解析结果
+      if (!isStreaming && messageId) {
+        this.markdownCache[messageId] = finalHtml
+      }
+      
+      return finalHtml
+    },
+    /**
+     * 完整解析模式：用于非流式输出或流式输出结束后的最终解析
+     * 目标：尽量「原样尊重」后端返回的 Markdown，不再做激进的正则改写。
+     */
+    parseMarkdownComplete(text) {
+      if (!text) return ''
+      const normalized = this.preprocessAnswer(text)
+      try {
+        return md.render(normalized)
+      } catch (error) {
+        console.error('❌ Markdown 解析失败:', error)
+        console.warn('原始文本片段:', normalized.substring(0, 200))
+        return this.escapeHtml(normalized)
+      }
+    },
+    /**
+     * 增量解析模式：用于流式输出
+     * 为了保证和最终结果一致，这里不再做复杂的“修复/拆分”，
+     * 而是直接对当前已收到的完整文本做一次普通 Markdown 渲染。
+     */
+    parseMarkdownIncremental(text) {
+      if (!text) return ''
+      const normalized = this.preprocessAnswer(text)
+      try {
+        return md.render(normalized)
+      } catch (error) {
+        console.warn('流式 Markdown 解析失败，使用转义文本显示', error)
+        return this.renderUnsafeText(normalized)
+      }
+    },
+    /**
+     * 修复流式输出中被拆分的markdown标记
+     * 只修复真正未完成的标记，避免误删列表项和有效标记
+     */
+    fixIncompleteMarkdownMarkers(text) {
+      if (!text) return text
+      
+      let result = text
+      
+      // 1. 修复未完成的标题标记 ###（只在文本末尾检查）
+      // 检查文本末尾是否有未完成的标题标记（以 # 结尾且后面没有内容）
+      const trimmedEnd = result.trimEnd()
+      if (trimmedEnd.endsWith('#')) {
+        // 从末尾向前查找连续的 #
+        let hashEnd = trimmedEnd.length - 1
+        let hashStart = hashEnd
+        while (hashStart > 0 && trimmedEnd[hashStart - 1] === '#') {
+          hashStart--
+        }
+        const hashCount = hashEnd - hashStart + 1
+        if (hashCount >= 1 && hashCount <= 6) {
+          // 检查这些 # 前面是否有换行符（说明是行首的标题）
+          const beforeHash = trimmedEnd.substring(0, hashStart)
+          // 如果前面有换行符，说明可能是有效的标题标记（在流式输出中被拆分）
+          // 只在后面完全没有内容时才移除
+          if (beforeHash.endsWith('\n')) {
+            // 检查原始文本中 # 后面是否有内容
+            const originalAfterHash = result.substring(result.length - (trimmedEnd.length - hashEnd - 1))
+            // 如果后面完全没有内容或只有空白，才移除
+            if (originalAfterHash.trim().length === 0) {
+              result = result.substring(0, result.length - (trimmedEnd.length - hashStart)) + trimmedEnd.substring(hashStart)
+            }
+          }
+        }
+      }
+      
+      // 2. 修复未完成的粗体标记 **（只在文本末尾检查）
+      // 统计 ** 的数量
+      let boldCount = 0
+      let i = 0
+      while (i < result.length - 1) {
+        if (result[i] === '*' && result[i + 1] === '*') {
+          boldCount++
+          i += 2
+        } else {
+          i++
+        }
+      }
+      
+      // 如果有未完成的粗体标记（奇数个 **），且最后一个在文本末尾附近
+      if (boldCount % 2 !== 0) {
+        const lastBoldIndex = result.lastIndexOf('**')
+        if (lastBoldIndex !== -1) {
+          const afterBold = result.substring(lastBoldIndex + 2)
+          // 只在后面内容很少（少于20个字符）且没有闭合标记时才移除
+          if (afterBold.trim().length < 20 && !afterBold.includes('**')) {
+            result = result.substring(0, lastBoldIndex) + result.substring(lastBoldIndex + 2)
+          }
+        }
+      }
+      
+      // 3. 不修复斜体标记 *，因为：
+      // - 列表项以 * 开头，不应该被误删
+      // - markdown-it 会自动处理未完成的斜体标记
+      // - 如果误删列表项的 *，会导致列表无法解析
+      
+      return result
+    },
+    /**
+     * 修复被换行符分隔的粗体标记（保留用于renderUnsafeText）
+     * 如果 **text\n 后面没有闭合的 **，移除开头的 **，避免解析错误
+     */
+    fixBoldMarkersSeparatedByNewline(text) {
+      if (!text) return text
+      
+      // 统计 ** 的数量
+      let boldCount = 0
+      let i = 0
+      while (i < text.length - 1) {
+        if (text[i] === '*' && text[i + 1] === '*') {
+          boldCount++
+          i += 2
+        } else {
+          i++
+        }
+      }
+      
+      // 如果有未完成的粗体标记（奇数个 **）
+      if (boldCount % 2 !== 0) {
+        // 找到最后一个 ** 的位置
+        const lastBoldIndex = text.lastIndexOf('**')
+        if (lastBoldIndex !== -1) {
+          const afterBold = text.substring(lastBoldIndex + 2)
+          // 如果后面有换行符且没有闭合的 **，说明粗体被换行符分隔了
+          // 移除这个 **，避免解析错误
+          if (afterBold.includes('\n') && !afterBold.includes('**')) {
+            // 移除最后一个 **
+            return text.substring(0, lastBoldIndex) + text.substring(lastBoldIndex + 2)
+          }
+          // 如果后面内容很少（少于2个字符），也移除这个 **
+          if (afterBold.trim().length < 2) {
+            return text.substring(0, lastBoldIndex) + text.substring(lastBoldIndex + 2)
+          }
+        }
+      }
+      
+      return text
+    },
+    /**
+     * 分段解析：将文本分割为完整部分和未完成部分
+     * 采用简单可靠的策略
+     */
+    splitAndParseIncremental(text) {
+      // 1. 检查是否有未完成的markdown结构
+      const codeBlockMarkers = (text.match(/```/g) || []).length
+      const hasIncompleteCodeBlock = codeBlockMarkers % 2 !== 0
+      
+      // 2. 查找最后一个可能未完成的markdown标记位置
+      let lastIncompleteMarkerIndex = -1
+      
+      // 检查未完成的标题标记（### 后面没有空格和内容）
+      // 从后往前查找，找到最后一个 # 序列
+      for (let i = text.length - 1; i >= 0; i--) {
+        if (text[i] === '#') {
+          // 向前查找连续的 #
+          let hashStart = i
+          while (hashStart > 0 && text[hashStart - 1] === '#') {
+            hashStart--
+          }
+          const hashCount = i - hashStart + 1
+          if (hashCount >= 1 && hashCount <= 6) {
+            // 检查后面是否有空格和内容
+            const afterHash = text.substring(i + 1)
+            // 更严格：如果后面没有空格，或者只有很少的内容（少于10个字符），认为是未完成的
+            if (!afterHash.match(/^\s/) || (afterHash.match(/^\s/) && afterHash.trim().length < 10)) {
+              // 找到未完成的标题标记
+              lastIncompleteMarkerIndex = Math.max(lastIncompleteMarkerIndex, hashStart)
+              break
+            }
+          }
+        }
+      }
+      
+      // 检查未完成的粗体标记（奇数个 **）
+      const boldMatches = text.match(/\*\*/g)
+      if (boldMatches && boldMatches.length % 2 !== 0) {
+        const lastBoldIndex = text.lastIndexOf('**')
+        if (lastBoldIndex !== -1) {
+          const afterBold = text.substring(lastBoldIndex + 2)
+          // 更严格：如果后面内容少于50个字符且没有闭合标记，认为是不完整的
+          if (afterBold.trim().length < 50 && !afterBold.includes('**')) {
+            lastIncompleteMarkerIndex = Math.max(lastIncompleteMarkerIndex, lastBoldIndex)
+          }
+        }
+      }
+      
+      // 检查未完成的代码块
+      if (hasIncompleteCodeBlock) {
+        const lastCodeBlockIndex = text.lastIndexOf('```')
+        if (lastCodeBlockIndex !== -1) {
+          lastIncompleteMarkerIndex = Math.max(lastIncompleteMarkerIndex, lastCodeBlockIndex)
+        }
+      }
+      
+      // 3. 确定安全解析的结束位置
+      let safeEndIndex = text.length
+      
+      if (lastIncompleteMarkerIndex !== -1) {
+        // 如果有未完成的标记，在标记之前找安全边界
+        const beforeMarker = text.substring(0, lastIncompleteMarkerIndex)
+        safeEndIndex = this.findSimpleBoundary(beforeMarker)
+      } else {
+        // 没有未完成的标记，使用简单策略找边界
+        safeEndIndex = this.findSimpleBoundary(text)
+      }
+      
+      // 4. 如果有未完成的标记，不要强制保留90%，应该更保守
+      // 只有在没有未完成标记时，才保留90%的内容
+      if (lastIncompleteMarkerIndex === -1 && text.length > 100) {
+        const minSafeIndex = Math.floor(text.length * 0.9)
+        if (safeEndIndex < minSafeIndex) {
+          safeEndIndex = minSafeIndex
+        }
+      }
+      
+      // 确保安全索引不会超过文本长度
+      safeEndIndex = Math.min(safeEndIndex, text.length)
+      
+      // 5. 分割文本
+      const safeText = text.substring(0, safeEndIndex)
+      const unsafeText = text.substring(safeEndIndex)
+      
+      // 6. 解析安全部分
+      let safeHtml = ''
+      if (safeText.trim()) {
+        try {
+          safeHtml = md.render(safeText)
+        } catch (error) {
+          console.warn('安全部分解析失败', error)
+          safeHtml = this.escapeHtml(safeText)
+        }
+      }
+      
+      // 7. 未完成部分：不解析，只转义显示（避免解析错误）
+      let unsafeHtml = ''
+      if (unsafeText) {
+        // 对未完成部分只进行转义显示，不尝试markdown解析
+        unsafeHtml = this.renderUnsafeText(unsafeText)
+      }
+      
+      return safeHtml + unsafeHtml
+    },
+    /**
+     * 简单的边界查找策略：只找明显的段落分隔
+     * 避免过度检测导致误判
+     * 特别考虑粗体、列表等Markdown结构的完整性
+     */
+    findSimpleBoundary(text) {
+      if (!text) return 0
+      
+      // 1. 优先找最后一个双换行符（段落分隔，最可靠）
+      const lastDoubleNewline = text.lastIndexOf('\n\n')
+      if (lastDoubleNewline !== -1 && lastDoubleNewline > text.length * 0.3) {
+        return lastDoubleNewline + 2
+      }
+      
+      // 2. 找最后一个以句号、问号、感叹号结尾的句子，后面跟换行
+      const sentenceEndRegex = /[。！？]\s*\n/g
+      let lastMatch = null
+      let match
+      while ((match = sentenceEndRegex.exec(text)) !== null) {
+        lastMatch = match
+      }
+      if (lastMatch && lastMatch.index > text.length * 0.3) {
+        return lastMatch.index + lastMatch[0].length
+      }
+      
+      // 3. 找最后一个换行符，但前面至少有一些内容
+      const lastNewline = text.lastIndexOf('\n')
+      if (lastNewline > text.length * 0.4) {
+        return lastNewline + 1
+      }
+      
+      // 4. 如果都没有，返回文本长度的90%（避免过度截断）
+      return Math.max(0, Math.floor(text.length * 0.9))
+    },
+    /**
+     * HTML转义
+     */
+    escapeHtml(text) {
+      if (!text) return ''
+      return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/\n/g, '<br>')
+    },
+    /**
+     * 渲染未完成的文本，保留粗体标记和换行符
+     * 用于流式输出的未完成部分，当markdown-it解析失败时使用
+     * 注意：不处理斜体，避免误处理列表项
+     */
+    renderUnsafeText(text) {
+      if (!text) return ''
+      
+      // 先修复被拆分的markdown标记
+      text = this.fixIncompleteMarkdownMarkers(text)
+      
+      // 转义HTML特殊字符
+      let escaped = text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+      
+      // 处理完整的粗体标记：**text** 转换为 <strong>text</strong>
+      escaped = escaped.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>')
+      
+      // 不处理斜体标记 *text*，因为：
+      // 1. 列表项以 * 开头，会被误处理
+      // 2. markdown-it 应该能正确处理，如果它失败了，我们也不应该手动处理
+      
+      // 处理换行符（保留所有换行）
+      escaped = escaped.replace(/\n/g, '<br>')
+      
+      return escaped
     },
     getConfidenceColor(score) {
       if (score >= 0.8) return '#52c41a'
@@ -563,16 +964,71 @@ export default {
       if (!date) return ''
       return new Date(date).toLocaleDateString()
     },
+    /**
+     * 对后端返回的 Markdown 做预处理：
+     * 1. 统一换行符 / 制表符
+     * 2. **轻量级地修复一些常见的「挤在一行里的 Markdown」问题**
+     *    - 把「……：### 一、」这种模式拆成换行标题
+     *    - 把「……1.  **条目**」这种模式拆成有序列表
+     *    - 把「……*   **子项**」这种模式拆成无序列表
+     *   这些规则只在标记前面是中文标点或句号时才生效，尽量避免误伤正常英文 Markdown。
+     */
     preprocessAnswer(answer) {
+      if (!answer) return ''
+      
       let text = answer
-        .replace(/\r\n/g, '\n')
-        .replace(/\t/g, '  ')
-        .trim()
+        .replace(/\r\n/g, '\n') // Windows -> Unix 换行
+        .replace(/\r/g, '')     // 去掉孤立的 \r
+        .replace(/\t/g, '  ')   // 制表符 -> 两个空格，避免缩进混乱
 
-      text = text.replace(/([^\n])(\d+)[\.、]\s*/g, (_, prev, num) => `${prev}\n${num}. `)
-      text = text.replace(/([^\n])([一二三四五六七八九十]+[、．.])/g, (_, prev, token) => `${prev}\n${token}`)
-      text = text.replace(/：(?=[^\n])/g, '：\n')
-      text = text.replace(/\n{3,}/g, '\n\n')
+      // ------------- 轻量级 Markdown 结构修复 -------------
+
+      // 1) 把「：### 一、」这类挤在一行里的标题拆出来（在标题前补一个换行）
+      // 示例："...如下：### 一、明确违约情形" -> "...如下：\n### 一、明确违约情形"
+      text = text.replace(
+        /([：。；\?？!！])\s*###\s+/g,
+        '$1\n### '
+      )
+
+      // 2) 把「：1.  xxx」/「：2.  xxx」这种内嵌的有序列表拆出来（在列表前换行）
+      // 示例："包括：1.  情形一；2.  情形二" -> "包括：\n1.  情形一；\n2.  情形二"
+      text = text.replace(
+        /([：。；\?？!！])\s*(\d+\.\s+)/g,
+        '$1\n$2'
+      )
+
+      // 3) 把「：*   xxx」这类内嵌无序列表拆出来（在无序列表前换行）
+      // 示例："包括：*   情形一 *   情形二" -> "包括：\n*   情形一\n*   情形二"
+      text = text.replace(
+        /([：。；\?？!！])\s*\*\s{2,}/g,
+        '$1\n*   '
+      )
+
+      // 4) 标题行后面如果紧跟内容（比如 "### 一、...1. ..."），在标题后面强制换行
+      // 示例："### 一、主要法律依据1.  xxx" -> "### 一、主要法律依据\n1.  xxx"
+      text = text.replace(/(###[^\n]*?)(\d+\.\s+)/g, '$1\n$2')
+      // 示例："### 二、具体处理步骤与方式**第一步：..." -> "### 二、具体处理步骤与方式\n**第一步：..."
+      text = text.replace(/(###[^\n]*?)(\*\*第[一二三四五六七八九十]+步)/g, '$1\n$2')
+      // 示例当前问题："### 一、 确定违约情形及责任首先需要明确……：1." ->
+      // "### 一、 确定违约情形及责任\n首先需要明确……：1."
+      text = text.replace(
+        /(###\s*[一二三四五六七八九十]+、[^\n]*?)(首先[^\n]*：)/g,
+        '$1\n$2'
+      )
+
+      // 5) 处理中文大标题行（不带 ###，例如 "一、 确定违约情形：XXXX"）
+      // 在大标题后的第一个全角冒号 "：" 后面补一个换行
+      // 示例："一、 确定违约情形：首先需要明确..." -> "一、 确定违约情形：\n首先需要明确..."
+      text = text.replace(
+        /(^|\n)([一二三四五六七八九十]+、[^\n：]*：)\s*/g,
+        '$1$2\n'
+      )
+
+      // 6) 如果连续出现多个标题 / 列表标记，中间只有少量空格，也补一个换行
+      // 避免 "### 一、### 二、" 挤在一起
+      text = text.replace(/(###\s+[^\n]+?)\s+(###\s+)/g, '$1\n$2')
+      text = text.replace(/(\d+\.\s+[^\n]+?)\s+(\d+\.\s+)/g, '$1\n$2')
+
       return text
     },
     formatArticleNumber(articleNumber) {
@@ -594,6 +1050,38 @@ export default {
       this.currentRelatedLaws = []
       this.currentRelatedCases = []
       this.currentEntities = {}
+    },
+    /**
+     * 只保留“第X条”这类具体条文，过滤掉“第X章”等章节级别记录
+     */
+    filterLawArticles(laws) {
+      if (!Array.isArray(laws)) return []
+      return laws.filter(law => {
+        if (!law) return false
+        const article = (law.articleNumber || '').toString().trim()
+        // 必须包含“条”，且不包含“章”
+        return article && article.includes('条') && !article.includes('章')
+      })
+    },
+    /**
+     * 清洗法条内容：去掉内容中的“第X章 / 第X节”标题行，只保留具体条文内容
+     */
+    cleanLawContent(content) {
+      if (!content) return ''
+      return content
+        .split('\n')
+        .filter(line => {
+          const trimmed = line.trim()
+          if (!trimmed) return true
+          // 去掉 Markdown 标题前缀，例如 "## 第五章 工资"
+          const withoutHashes = trimmed.replace(/^#{1,6}\s*/, '')
+          // 过滤以“第X章”或“第X节”开头的行
+          if (/^第[一二三四五六七八九十百千万0-9]+(章|节)/.test(withoutHashes)) {
+            return false
+          }
+          return true
+        })
+        .join('\n')
     },
     async startStreamRequest(question, botMessage) {
       const controller = new AbortController()
@@ -655,14 +1143,39 @@ export default {
           throw new Error('STREAM_TIMEOUT')
         }
         if (this.isAbortError(error)) {
-          throw error
+          // 用户主动终止，不抛出错误，让finally块处理清理
+          // 但需要标记为已终止，避免重复处理
+          botMessage._aborted = true
+          return
         }
         throw error
       } finally {
         clearTimeout(timeoutId)
-        this.currentRequestController = null
-        botMessage.isLoading = false
-        botMessage.isStreaming = false
+        // 只有在不是用户主动终止的情况下才清空controller
+        // 如果用户主动终止，stopStreaming已经处理了
+        if (!botMessage._aborted) {
+          this.currentRequestController = null
+          // 只有在流式输出真正结束时才隐藏加载指示器
+          botMessage.isLoading = false
+          botMessage.isStreaming = false
+        }
+        // 确保清除防抖定时器
+        const messageIndex = this.messages.findIndex(msg => msg === botMessage)
+        const timerKey = botMessage.id || `msg_${messageIndex}`
+        if (this.markdownParseTimers[timerKey]) {
+          clearTimeout(this.markdownParseTimers[timerKey])
+          delete this.markdownParseTimers[timerKey]
+        }
+        // 流式输出结束后，清除缓存并强制进行最终完整解析
+        if (botMessage.id) {
+          delete this.markdownCache[botMessage.id]
+        }
+        // 强制更新视图，此时 isStreaming 已为 false，会使用完整解析模式
+        this.$nextTick(() => {
+          this.$forceUpdate()
+        })
+        // 清除终止标记
+        delete botMessage._aborted
       }
     },
     processSseChunk(chunk, botMessage) {
@@ -670,17 +1183,46 @@ export default {
       let eventType = 'message'
       const dataLines = []
 
-      lines.forEach(line => {
-        const trimmed = line.trim()
-        if (!trimmed) return
-        if (trimmed.startsWith('event:')) {
-          eventType = trimmed.substring(6).trim()
-        } else if (trimmed.startsWith('data:')) {
-          dataLines.push(trimmed.substring(5).trim())
+      lines.forEach((line, index) => {
+        // 检查是否是event行（不trim，因为可能需要保留空格）
+        if (line.trim().startsWith('event:')) {
+          eventType = line.trim().substring(6).trim()
+          return
+        }
+        
+        // 检查是否是data行（使用startsWith而不是trimmed.startsWith，以正确处理data:后跟空格的情况）
+        if (line.startsWith('data:')) {
+          const dataPrefix = 'data:'
+          const dataIndex = line.indexOf(dataPrefix)
+          if (dataIndex !== -1) {
+            // 提取data:后面的所有内容（包括空格和换行符信息）
+            let dataContent = line.substring(dataIndex + dataPrefix.length)
+            // SSE规范允许data:后有一个空格，但这个空格不是数据的一部分
+            // 但如果data:后直接是换行符（即空内容），应该保留为空字符串
+            if (dataContent.startsWith(' ')) {
+              // 去掉前导空格（这是SSE规范允许的格式，但空格不是数据内容）
+              dataContent = dataContent.substring(1)
+            }
+            // 保留原始内容，包括空字符串（表示空行）
+            // 这样 data: 后面什么都没有时，会保留为空字符串，在join时形成换行
+            dataLines.push(dataContent)
+          }
+          return
+        }
+        
+        // 完全空的行（没有任何前缀）表示SSE消息结束，跳过
+        // 注意：这里的空行不应该被当作data内容的一部分
+        // 因为如果它是data内容，它应该以 "data: " 或 "data:" 开头
+        if (!line.trim()) {
+          // 这是一个SSE消息结束标记，跳过
+          return
         }
       })
 
       if (dataLines.length === 0) return false
+      // 使用换行符连接多个data行，保留所有内容
+      // 注意：如果某个data行是空字符串（即后端发送了 "data: \n"），
+      // 在join时会形成换行符，这样可以正确保留空行
       const dataStr = dataLines.join('\n')
 
       switch (eventType) {
@@ -702,15 +1244,55 @@ export default {
         case 'end':
           botMessage.isLoading = false
           botMessage.isStreaming = false
+          // 流式输出结束时，清除防抖定时器
+          const messageIndex = this.messages.findIndex(msg => msg === botMessage)
+          const timerKey = botMessage.id || `msg_${messageIndex}`
+          if (this.markdownParseTimers[timerKey]) {
+            clearTimeout(this.markdownParseTimers[timerKey])
+            delete this.markdownParseTimers[timerKey]
+          }
+          // 清除缓存，确保使用完整解析模式
+          if (botMessage.id) {
+            delete this.markdownCache[botMessage.id]
+          }
+          // 强制更新视图，使用完整解析模式（isStreaming 已设为 false）
+          this.$nextTick(() => {
+            this.$forceUpdate()
+          })
           break
         default:
-          botMessage.isLoading = false
+          // 流式输出进行中，保持加载状态
+          botMessage.isLoading = true
+          botMessage.isStreaming = true
           botMessage.answer = (botMessage.answer || '') + dataStr
+          // 使用防抖机制，避免频繁重新解析 Markdown
+          this.debounceMarkdownParse(botMessage)
           break
       }
 
       this.$nextTick(this.scrollToBottom)
       return true
+    },
+    /**
+     * 防抖处理 Markdown 解析，减少样式跳动
+     * 使用更短的延迟，因为现在使用增量解析，不会导致结构大幅变化
+     */
+    debounceMarkdownParse(botMessage) {
+      // 使用消息在数组中的索引作为唯一标识
+      const messageIndex = this.messages.findIndex(msg => msg === botMessage)
+      const timerKey = botMessage.id || `msg_${messageIndex}`
+      
+      // 清除之前的定时器
+      if (this.markdownParseTimers[timerKey]) {
+        clearTimeout(this.markdownParseTimers[timerKey])
+      }
+      
+      // 使用较短的延迟（150ms），因为增量解析已经避免了结构大幅变化
+      this.markdownParseTimers[timerKey] = setTimeout(() => {
+        // 强制更新视图
+        this.$forceUpdate()
+        delete this.markdownParseTimers[timerKey]
+      }, 150)
     },
     applyMetadata(dataStr, botMessage) {
       try {
@@ -722,7 +1304,7 @@ export default {
           this.sessionId = metadata.sessionId
         }
         if (Array.isArray(metadata.relatedLaws) && metadata.relatedLaws.length > 0) {
-          this.currentRelatedLaws = metadata.relatedLaws
+          this.currentRelatedLaws = this.filterLawArticles(metadata.relatedLaws)
         }
         if (Array.isArray(metadata.relatedCases) && metadata.relatedCases.length > 0) {
           this.currentRelatedCases = metadata.relatedCases
@@ -737,7 +1319,7 @@ export default {
     applyRelatedData(dataStr) {
       try {
         const payload = JSON.parse(dataStr)
-        this.currentRelatedLaws = payload.relatedLaws || []
+        this.currentRelatedLaws = this.filterLawArticles(payload.relatedLaws || [])
         this.currentRelatedCases = payload.relatedCases || []
         this.currentEntities = this.normalizeEntities(payload.entities || {})
       } catch (error) {
@@ -755,7 +1337,7 @@ export default {
       botMessage.questionType = response.data.questionType
       botMessage.id = response.data.id
 
-      this.currentRelatedLaws = response.data.relatedLaws || []
+      this.currentRelatedLaws = this.filterLawArticles(response.data.relatedLaws || [])
       this.currentRelatedCases = response.data.relatedCases || []
       this.currentEntities = this.normalizeEntities(response.data.entities || {})
       botMessage.isLoading = false
@@ -806,7 +1388,7 @@ export default {
                 : item.relatedLaws
               if (Array.isArray(laws) && laws.length > 0) {
                 // 如果是字符串数组，转换为对象格式
-                this.currentRelatedLaws = laws.map(law => {
+                const mappedLaws = laws.map(law => {
                   if (typeof law === 'string') {
                     // 解析字符串格式，如 "刑法第1条"
                     const match = law.match(/^(.+?)第(.+?)条$/)
@@ -817,6 +1399,8 @@ export default {
                   }
                   return law
                 })
+                // 只保留“第X条”级别的记录
+                this.currentRelatedLaws = this.filterLawArticles(mappedLaws)
               }
             } catch (e) {
               console.warn('解析相关法条失败', e)
@@ -921,6 +1505,11 @@ export default {
   word-wrap: break-word;
 }
 
+/* 机器人消息气泡增加左侧内边距，确保序号和内容不会超出 */
+.message-bubble.bot-bubble {
+  padding-left: 24px; /* 增加左侧内边距，为列表 marker 预留空间 */
+}
+
 .user-bubble {
   background: var(--primary-color);
   color: white;
@@ -957,22 +1546,173 @@ export default {
 }
 
 .answer-content {
-  line-height: 1.7;
-  white-space: pre-wrap;
+  line-height: 1.8;
+  word-wrap: break-word;
+  white-space: pre-wrap; /* 保留换行和空格 */
+}
+
+.answer-content br {
+  display: block;
+  margin: 0.2em 0;
+  line-height: 1.8;
+  content: '';
+  height: 0;
 }
 
 .answer-content p {
-  margin: 0 0 12px 0;
+  margin: 0 0 8px 0;
+  line-height: 1.8;
+  white-space: normal; /* 段落内正常换行，但保留 <br> 标签 */
+}
+
+/* 处理空段落，减少不必要的间距 */
+.answer-content p:empty {
+  margin: 0;
+  height: 0;
+  display: none;
+}
+
+/* 减少连续段落之间的间距 */
+.answer-content p + p {
+  margin-top: 0;
+}
+
+.answer-content h1,
+.answer-content h2,
+.answer-content h3,
+.answer-content h4,
+.answer-content h5,
+.answer-content h6 {
+  margin: 12px 0 8px 0;
+  font-weight: bold;
+  line-height: 1.4;
+}
+
+/* 标题后的第一个段落减少上边距 */
+.answer-content h1 + p,
+.answer-content h2 + p,
+.answer-content h3 + p,
+.answer-content h4 + p,
+.answer-content h5 + p,
+.answer-content h6 + p {
+  margin-top: 0;
+}
+
+.answer-content h1 {
+  font-size: 24px;
+}
+
+.answer-content h2 {
+  font-size: 20px;
+}
+
+.answer-content h3 {
+  font-size: 18px;
+}
+
+.answer-content h4 {
+  font-size: 16px;
+}
+
+.answer-content h5 {
+  font-size: 14px;
+}
+
+.answer-content h6 {
+  font-size: 12px;
 }
 
 .answer-content ul,
 .answer-content ol {
-  margin: 0 0 12px 18px;
-  padding-left: 18px;
+  margin: 0 0 8px 0;
+  padding-left: 0; /* 移除列表容器的 padding，由 li 控制 */
+  list-style-position: outside; /* marker 在内容框外 */
 }
 
 .answer-content li {
-  margin-bottom: 6px;
+  margin-bottom: 4px;
+  line-height: 1.8;
+  display: list-item;
+  padding-left: 28px; /* 为 marker 预留空间，确保 marker 在气泡框内 */
+  margin-left: 0; /* 确保没有额外的左边距 */
+  position: relative; /* 为 marker 定位做准备 */
+}
+
+/* 确保有序列表的序号有足够空间（数字可能比项目符号更宽） */
+.answer-content ol li {
+  padding-left: 32px; /* 有序列表需要更多空间来容纳序号 */
+}
+
+/* 列表后的段落减少上边距 */
+.answer-content ul + p,
+.answer-content ol + p {
+  margin-top: 0;
+}
+
+/* 段落后的列表减少上边距 */
+.answer-content p + ul,
+.answer-content p + ol {
+  margin-top: 0;
+}
+
+.answer-content strong {
+  font-weight: bold;
+}
+
+.answer-content em {
+  font-style: italic;
+}
+
+.answer-content code {
+  background-color: #f4f4f4;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.9em;
+}
+
+.answer-content pre {
+  background-color: #f4f4f4;
+  padding: 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 12px 0;
+}
+
+.answer-content pre code {
+  background-color: transparent;
+  padding: 0;
+}
+
+.answer-content blockquote {
+  border-left: 4px solid #ddd;
+  margin: 12px 0;
+  padding-left: 16px;
+  color: #666;
+}
+
+.answer-content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 12px 0;
+}
+
+.answer-content table th,
+.answer-content table td {
+  border: 1px solid #ddd;
+  padding: 8px;
+  text-align: left;
+}
+
+.answer-content table th {
+  background-color: #f5f5f5;
+  font-weight: bold;
+}
+
+.answer-content hr {
+  border: none;
+  border-top: 1px solid #ddd;
+  margin: 16px 0;
 }
 
 .law-highlight {

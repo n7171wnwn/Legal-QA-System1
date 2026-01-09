@@ -30,4 +30,52 @@ public interface LegalArticleRepository extends JpaRepository<LegalArticle, Long
     Long countDistinctTitles(@Param("isValid") Boolean isValid);
 
     List<LegalArticle> findByTitleContainingAndIsValidTrue(String title);
+
+    /**
+     * 获取所有法律列表及其统计信息（按法律名称分组）
+     * 返回：title, lawType, publishOrg, count
+     * 司法解释类型：统计所有记录
+     * 其他类型：只统计"条"的记录，不包含"章"、"节"
+     */
+    @Query("SELECT la.title, MAX(la.lawType), MAX(la.publishOrg), " +
+           "SUM(CASE WHEN la.lawType = '司法解释' THEN 1 " +
+           "         WHEN la.articleNumber LIKE '%条%' AND la.articleNumber NOT LIKE '%章%' AND la.articleNumber NOT LIKE '%节%' THEN 1 " +
+           "         ELSE 0 END) " +
+           "FROM LegalArticle la " +
+           "WHERE la.isValid = :isValid " +
+           "GROUP BY la.title " +
+           "ORDER BY la.title")
+    List<Object[]> findAllLawSummaries(@Param("isValid") Boolean isValid);
+
+    /**
+     * 根据关键词搜索法律列表（名称匹配）
+     * 返回：title, lawType, publishOrg, count
+     * 司法解释类型：统计所有记录
+     * 其他类型：只统计"条"的记录，不包含"章"、"节"
+     */
+    @Query("SELECT la.title, MAX(la.lawType), MAX(la.publishOrg), " +
+           "SUM(CASE WHEN la.lawType = '司法解释' THEN 1 " +
+           "         WHEN la.articleNumber LIKE '%条%' AND la.articleNumber NOT LIKE '%章%' AND la.articleNumber NOT LIKE '%节%' THEN 1 " +
+           "         ELSE 0 END) " +
+           "FROM LegalArticle la " +
+           "WHERE la.isValid = :isValid AND LOWER(la.title) LIKE LOWER(CONCAT('%', :keyword, '%')) " +
+           "GROUP BY la.title " +
+           "ORDER BY la.title")
+    List<Object[]> findLawSummariesByNameMatch(@Param("isValid") Boolean isValid, @Param("keyword") String keyword);
+
+    /**
+     * 根据关键词搜索法律列表（内容匹配）
+     * 返回：title, lawType, publishOrg, count
+     * 司法解释类型：统计所有记录
+     * 其他类型：只统计"条"的记录，不包含"章"、"节"
+     */
+    @Query("SELECT la.title, MAX(la.lawType), MAX(la.publishOrg), " +
+           "SUM(CASE WHEN la.lawType = '司法解释' THEN 1 " +
+           "         WHEN la.articleNumber LIKE '%条%' AND la.articleNumber NOT LIKE '%章%' AND la.articleNumber NOT LIKE '%节%' THEN 1 " +
+           "         ELSE 0 END) " +
+           "FROM LegalArticle la " +
+           "WHERE la.isValid = :isValid AND LOWER(la.content) LIKE LOWER(CONCAT('%', :keyword, '%')) " +
+           "GROUP BY la.title " +
+           "ORDER BY la.title")
+    List<Object[]> findLawSummariesByContentMatch(@Param("isValid") Boolean isValid, @Param("keyword") String keyword);
 }

@@ -95,29 +95,9 @@
 
 1. 配置数据库
 
-**方式一：导入完整数据库（推荐，包含示例数据）**
-
-```powershell
-# 创建数据库
-mysql -u root -p -e "CREATE DATABASE legal_qa CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-
-# 导入完整数据库（包含表结构和数据）
-mysql -u root -p legal_qa < backend/src/main/resources/db/migration/legal_qa_complete.sql
-```
-
-**方式二：仅创建表结构**
-
 ```sql
 CREATE DATABASE legal_qa CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
-
-然后执行：
-
-```powershell
-mysql -u root -p legal_qa < backend/src/main/resources/db/migration/schema.sql
-```
-
-📖 **详细导入指南请参考：** [DATABASE_IMPORT_GUIDE.md](DATABASE_IMPORT_GUIDE.md)
 
 2. 修改配置
    编辑 `backend/src/main/resources/application.yml`：

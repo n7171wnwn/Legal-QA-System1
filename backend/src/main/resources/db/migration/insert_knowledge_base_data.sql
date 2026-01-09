@@ -37,3 +37,12 @@ INSERT INTO knowledge_base (question, answer, question_type, law_type, usage_cou
 
 
 
+
+
+
+
+
+
+
+
+

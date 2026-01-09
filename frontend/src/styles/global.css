@@ -101,15 +101,11 @@ body {
   white-space: normal !important;
   line-height: 1.5 !important;
   padding: 8px 12px !important;
-}
-
-/* Element UI Table Tooltip 样式优化 */
+}/* Element UI Table Tooltip 样式优化 */
 .el-table .cell {
   word-break: break-word;
   white-space: normal;
-}
-
-/* 确保 tooltip 内容区域可以换行 */
+}/* 确保 tooltip 内容区域可以换行 */
 .el-tooltip__popper .el-tooltip__inner {
   max-width: 100% !important;
   word-wrap: break-word !important;
@@ -117,4 +113,3 @@ body {
   white-space: normal !important;
   line-height: 1.5 !important;
 }
-

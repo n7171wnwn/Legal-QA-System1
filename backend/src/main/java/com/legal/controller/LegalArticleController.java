@@ -1,6 +1,7 @@
 package com.legal.controller;
 
 import com.legal.dto.ApiResponse;
+import com.legal.dto.LawSummary;
 import com.legal.entity.LegalArticle;
 import com.legal.service.LegalArticleService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -48,6 +49,35 @@ public class LegalArticleController {
     @GetMapping("/titles")
     public ApiResponse<List<String>> getAllTitles() {
         return ApiResponse.success(legalArticleService.getAllDistinctTitles());
+    }
+
+    /**
+     * 获取法律列表及其统计信息
+     * @param keyword 搜索关键词（可选）
+     * @param type 搜索类型：name（名称匹配）或 content（内容匹配），默认为 name
+     */
+    @GetMapping("/laws")
+    public ApiResponse<List<LawSummary>> getLawSummaries(
+            @RequestParam(required = false) String keyword,
+            @RequestParam(defaultValue = "name") String type) {
+        try {
+            List<LawSummary> summaries;
+            if (keyword == null || keyword.trim().isEmpty()) {
+                // 无关键词，返回所有法律列表
+                summaries = legalArticleService.getAllLawSummaries();
+            } else {
+                // 有关键词，根据类型搜索
+                if ("content".equalsIgnoreCase(type)) {
+                    summaries = legalArticleService.getLawSummariesByContentMatch(keyword);
+                } else {
+                    summaries = legalArticleService.getLawSummariesByNameMatch(keyword);
+                }
+            }
+            return ApiResponse.success(summaries);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ApiResponse.error("获取法律列表失败: " + e.getMessage());
+        }
     }
 
     @GetMapping("/stats")

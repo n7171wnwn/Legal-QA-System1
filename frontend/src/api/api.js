@@ -36,6 +36,7 @@ export const getArticleById = (id) => request.get(`/legal/article/${id}`)
 export const getAllArticles = () => request.get('/legal/article/all')
 export const getAllTitles = () => request.get('/legal/article/titles')
 export const getArticleStatistics = () => request.get('/legal/article/stats')
+export const getLawSummaries = (params) => request.get('/legal/article/laws', { params })
 
 // 案例相关
 export const searchCases = (params) => request.get('/legal/case/search', { params })

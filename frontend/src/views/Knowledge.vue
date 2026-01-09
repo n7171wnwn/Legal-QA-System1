@@ -76,11 +76,11 @@
                         class="fixed-tag"
                         :style="{ width: tagWidth + 'px' }"
                       >
-                        {{ getLawAbbr(law.title) }}
+                        {{ getLawAbbr(law) }}
                       </el-tag>
                     </div>
                     <div class="law-title-info">
-                      <span class="article-count">{{ law.count }} 条</span>
+                      
                       <span class="law-org" v-if="law.publishOrg">{{ law.publishOrg }}</span>
                     </div>
                   </el-card>
@@ -109,11 +109,10 @@
                         class="fixed-tag"
                         :style="{ width: tagWidth + 'px' }"
                       >
-                        {{ getLawAbbr(law.title) }}
+                        {{ getLawAbbr(law) }}
                       </el-tag>
                     </div>
                     <div class="law-title-info">
-                      <span class="article-count">{{ law.count }} 条</span>
                       <span class="law-org" v-if="law.publishOrg">{{ law.publishOrg }}</span>
                     </div>
                   </el-card>
@@ -153,7 +152,6 @@
                     </el-tag>
                   </div>
                   <div class="law-title-info">
-                    <span class="article-count">{{ law.count }} 条</span>
                     <span class="law-org" v-if="law.publishOrg">{{ law.publishOrg }}</span>
                   </div>
                 </el-card>
@@ -188,10 +186,10 @@
                   :style="{ width: tagWidth + 'px' }"
                   @click.stop="loadFullLaw(selectedLawTitle || article.title)"
                 >
-                  {{ selectedLawTitle ? getLawAbbr(selectedLawTitle) : getLawAbbr(article.title) }}
+                  {{ selectedLawTitle ? getLawAbbr({ title: selectedLawTitle, publishOrg: article.publishOrg }) : getLawAbbr(article) }}
                 </el-tag>
                 </div>
-                <p class="article-content">{{ article.content }}</p>
+                <p class="article-content">{{ cleanLawContent(article.content) }}</p>
                 <div class="article-footer">
                   <span class="article-org" v-if="article.publishOrg">{{ article.publishOrg }}</span>
                   <span class="article-date" v-if="article.publishDate">{{ formatDate(article.publishDate) }}</span>
@@ -271,7 +269,7 @@
       <div v-if="selectedItem">
         <div v-if="activeTab === 'article'">
           <h3>{{ selectedItem.title }}<span v-if="formatArticleNumber(selectedItem.articleNumber)"> {{ formatArticleNumber(selectedItem.articleNumber) }}</span></h3>
-          <p>{{ selectedItem.content }}</p>
+          <p>{{ cleanLawContent(selectedItem.content) }}</p>
           <p><strong>发布机构：</strong>{{ selectedItem.publishOrg || '未知' }}</p>
           <p><strong>发布日期：</strong>{{ formatDate(selectedItem.publishDate) || '未知' }}</p>
         </div>
@@ -309,7 +307,7 @@
 
 <script>
 import NavBar from '@/components/NavBar.vue'
-import { searchArticles, searchCases, searchConcepts, getAllTitles } from '@/api/api'
+import { searchArticles, searchCases, searchConcepts, getAllTitles, getLawSummaries } from '@/api/api'
 
 // 简单的模块级缓存，组件卸载后仍可复用
 const lawCache = {
@@ -464,140 +462,185 @@ export default {
       try {
         const keywordRaw = (this.searchKeyword || '').trim()
         const keyword = keywordRaw.toLowerCase()
-        const useCache = !keyword && lawCache.loaded
-        if (useCache) {
-          this.allArticles = lawCache.allArticles
-          // 使用全部缓存数据，让计算属性处理分页
-          this.lawTitleTotal = lawCache.lawTitleTotal
-          this.lawTitles = lawCache.lawTitles  // 使用全部数据，不要在这里分页
-          this.tagWidth = lawCache.tagWidth
-          return
-        }
 
-        // 1) 获取全部法律标题
-        const titlesResponse = await getAllTitles()
-        const allTitles = titlesResponse.data || []
-
-        // 2) 根据标题匹配和内容匹配合并过滤列表
-        let filteredTitlesByName = allTitles
-        if (keyword) {
-          filteredTitlesByName = allTitles.filter(title =>
-            title.toLowerCase().includes(keyword)
-          )
-        }
-
-        // 3) 依据关键词搜索法条（关键词为空则取全部），用于内容命中
-        const articlesResp = await searchArticles({
-          keyword: keywordRaw,
-          page: 0,
-          size: 50000
-        })
-        this.allArticles = articlesResp.data.content || []
-
-        // 4) 按法律名称分组（处理全部 articles，后续按命中拆分）
-        const lawMap = new Map()
-        this.allArticles.forEach(article => {
-          const title = article.title
-          if (!title) return
-          if (!lawMap.has(title)) {
-            lawMap.set(title, {
-              title: title,
-              lawType: article.lawType,
-              publishOrg: article.publishOrg,
-              count: 0,
-              articles: []
-            })
-          }
-          const law = lawMap.get(title)
-          law.count++
-          law.articles.push(article)
-        })
-
-        // 5) 构建名称命中与内容命中列表
-        const lawListByName = filteredTitlesByName
-          .map(title => lawMap.get(title))
-          .filter(Boolean)
-
-        const lawListByContent = this.allArticles
-          .map(a => a.title)
-          .filter(Boolean)
-          .filter((t, idx, arr) => arr.indexOf(t) === idx)
-          .map(title => lawMap.get(title))
-          .filter(Boolean)
-          // 若内容命中中与名称命中重复，则保留（需求未要求去重）
-          ;
-
-        // 6) 排序函数
+        // 排序函数
         const sortLaws = (list) => {
           return list.sort((a, b) => {
-            const isAmendmentA = a.title.includes('修正案')
-            const isAmendmentB = b.title.includes('修正案')
-
-            if (isAmendmentA !== isAmendmentB) {
-              return isAmendmentA ? 1 : -1
+            // 获取法律分类优先级
+            const getCategoryPriority = (law) => {
+              const title = (law.title || '').toLowerCase()
+              const publishOrg = (law.publishOrg || '').toLowerCase()
+              
+              // 特殊处理：将"中华人民共和国宪法（2018年修正文本）"放在第一位
+              const constitution2018 = '中华人民共和国宪法（2018年修正文本）'.toLowerCase()
+              const constitution2018Alt = '中华人民共和国宪法(2018年修正文本)'.toLowerCase()
+              if (title === constitution2018 || title === constitution2018Alt) {
+                return -1 // 最高优先级，排在第一位
+              }
+              
+              // 首先判断是否是修正案、老版本、地方法规或司法解释，这些都要放在后面
+              // 注意：排除"中华人民共和国宪法（2018年修正文本）"，因为它已经在上面特殊处理了
+              const isAmendment = (title.includes('修正案') || title.includes('修正文本') || title.includes('修正')) &&
+                                  !(title === constitution2018 || title === constitution2018Alt)
+              const isOldVersion = title.includes('废止') || title.includes('旧版') || title.includes('原') || 
+                                   title.match(/\(\d{4}年\)/) || title.match(/\d{4}年/) || 
+                                   title.includes('已废止') || title.includes('失效')
+              
+              // 判断是否是地方法规（省、市、自治区、县、自治县、施行等）
+              const isLocalLaw = title.match(/省|市|自治区|特别行政区|地方|县|自治县|施行|变通/) || 
+                                title.includes('施行《') ||
+                                (publishOrg && publishOrg.match(/省|市|自治区|特别行政区|地方|县|自治县/) &&
+                                 !publishOrg.includes('最高') && !publishOrg.includes('国务院') && 
+                                 !publishOrg.includes('全国'))
+              
+              // 判断是否是司法解释（最高人民法院、最高人民检察院）
+              const isJudicialInterpretation = (publishOrg.includes('最高') && (publishOrg.includes('法院') || publishOrg.includes('检察院'))) ||
+                                              (title.includes('解释') && (publishOrg.includes('法院') || publishOrg.includes('检察院'))) ||
+                                              (title.includes('规定') && publishOrg.includes('最高') && (publishOrg.includes('法院') || publishOrg.includes('检察院'))) ||
+                                              (title.includes('意见') && publishOrg.includes('最高') && (publishOrg.includes('法院') || publishOrg.includes('检察院')))
+              
+              // 如果是修正案、老版本、地方法规或司法解释，直接返回低优先级（放在后面）
+              if (isAmendment || isOldVersion || isLocalLaw || isJudicialInterpretation) {
+                // 修正案优先级最低（950）
+                if (isAmendment) return 950
+                // 司法解释（900）
+                if (isJudicialInterpretation) return 900
+                // 老版本次之（850）
+                if (isOldVersion) return 850
+                // 地方法规（800）
+                if (isLocalLaw) return 800
+              }
+              
+              // 1. 常用法律法规的官方版本（最高优先级，按重要性排序）
+              // 注意：只匹配官方版本，不包含修正案、年份、地方等标识
+              const commonLaws = [
+                '中华人民共和国宪法',                    // 宪法最优先（索引 0）
+                '中华人民共和国民法典',                  // 民法（索引 1）
+                '中华人民共和国刑法',                    // 刑法（索引 2）
+                '中华人民共和国劳动法',                  // 劳动法（索引 3）
+                '中华人民共和国未成年人保护法',          // 未成年保护法（索引 4）
+                '中华人民共和国刑事诉讼法',              // 刑事诉讼法（索引 5）
+                '中华人民共和国民事诉讼法',              // 民事诉讼法（索引 6）
+                '中华人民共和国行政诉讼法',              // 行政诉讼法（索引 7）
+                '中华人民共和国合同法',                  // 合同法（索引 8）
+                '中华人民共和国公司法',                  // 公司法（索引 9）
+                '中华人民共和国证券法',                  // 证券法（索引 10）
+                '中华人民共和国婚姻法',                  // 婚姻法（索引 11）
+                '中华人民共和国继承法',                  // 继承法（索引 12）
+                '中华人民共和国物权法',                  // 物权法（索引 13）
+                '中华人民共和国侵权责任法',              // 侵权责任法（索引 14）
+                '中华人民共和国立法法',                  // 立法法（索引 15）
+                '中华人民共和国行政处罚法',              // 行政处罚法（索引 16）
+                '中华人民共和国行政许可法',              // 行政许可法（索引 17）
+                '中华人民共和国行政复议法'               // 行政复议法（索引 18）
+              ]
+              
+              // 精确匹配常用法律的官方版本（不包含修正案、年份、地方等）
+              for (let i = 0; i < commonLaws.length; i++) {
+                const lawKeyword = commonLaws[i].toLowerCase()
+                // 精确匹配或标题以该法律名称开头且不包含年份、修正案、地方等标识
+                if (title === lawKeyword || 
+                    (title.startsWith(lawKeyword) && 
+                     !title.match(/\(\d{4}年\)/) && 
+                     !title.match(/\d{4}年/) &&
+                     !title.includes('修正') &&
+                     !title.match(/省|市|自治区|特别行政区|地方|县|自治县|施行|变通/))) {
+                  return i // 返回索引，越小优先级越高
+                }
+              }
+              
+              // 2. 其他法律（中华人民共和国XX法，优先级 200）
+              if (title.includes('中华人民共和国') && title.includes('法') && 
+                  !title.match(/省|市|自治区|特别行政区|地方|县|自治县|施行|变通/) &&
+                  !title.includes('修正') && !title.match(/\(\d{4}年\)/) && !title.match(/\d{4}年/)) {
+                return 200
+              }
+              
+              // 3. 行政法规（国务院发布的条例、办法、规定等，优先级 300）
+              if ((publishOrg.includes('国务院') || publishOrg.includes('中华人民共和国国务院')) &&
+                  (title.includes('条例') || title.includes('办法') || title.includes('规定') || title.includes('决定')) &&
+                  !title.match(/省|市|自治区|特别行政区|地方|县|自治县|施行|变通/)) {
+                return 300
+              }
+              
+              // 4. 监察法规（优先级 350）
+              if ((title.includes('监察') || publishOrg.includes('监察')) &&
+                  !title.match(/省|市|自治区|特别行政区|地方|县|自治县|施行|变通/)) {
+                return 350
+              }
+              
+              // 5. 其他（优先级 600）
+              return 600
             }
 
-            const commonLawTypes = ['民法', '刑法', '行政法', '合同法', '劳动法', '婚姻法', '继承法', '侵权责任法', '物权法']
+            const categoryA = getCategoryPriority(a)
+            const categoryB = getCategoryPriority(b)
 
+            // 先按分类优先级排序
+            if (categoryA !== categoryB) {
+              return categoryA - categoryB
+            }
+
+            // 同一分类内，按常用法律类型排序
+            const commonLawTypes = ['民法', '刑法', '行政法', '合同法', '劳动法', '婚姻法', '继承法', '侵权责任法', '物权法']
             const getLawTypePriority = (lawType) => {
               if (!lawType) return 999
               const index = commonLawTypes.findIndex(type => lawType.includes(type))
               return index === -1 ? 999 : index
             }
 
-            const priorityA = getLawTypePriority(a.lawType)
-            const priorityB = getLawTypePriority(b.lawType)
+            const typePriorityA = getLawTypePriority(a.lawType)
+            const typePriorityB = getLawTypePriority(b.lawType)
 
-            if (priorityA !== priorityB) {
-              return priorityA - priorityB
+            if (typePriorityA !== typePriorityB) {
+              return typePriorityA - typePriorityB
             }
 
-            if (a.lawType !== b.lawType) {
-              return (a.lawType || '').localeCompare(b.lawType || '')
-            }
+            // 最后按标题排序
             return a.title.localeCompare(b.title)
           })
         }
 
-        this.lawTitlesByName = sortLaws(lawListByName)
-        this.lawTitlesByContent = sortLaws(lawListByContent)
-
-        // 7) 分页处理与计数
-        this.lawTitleNameTotal = this.lawTitlesByName.length
-        this.lawTitleContentTotal = this.lawTitlesByContent.length
-
-        // 当无关键词时，仍使用全部列表并缓存
-        let allLawTitles = []
         if (!keyword) {
-          allLawTitles = Array.from(lawMap.values())
-          .sort((a, b) => {
-                const isAmendmentA = a.title.includes('修正案')
-                const isAmendmentB = b.title.includes('修正案')
-                if (isAmendmentA !== isAmendmentB) return isAmendmentA ? 1 : -1
-                const commonLawTypes = ['民法', '刑法', '行政法', '合同法', '劳动法', '婚姻法', '继承法', '侵权责任法', '物权法']
-                const getLawTypePriority = (lawType) => {
-                  if (!lawType) return 999
-                  const index = commonLawTypes.findIndex(type => lawType.includes(type))
-                  return index === -1 ? 999 : index
-                }
-                const priorityA = getLawTypePriority(a.lawType)
-                const priorityB = getLawTypePriority(b.lawType)
-                if (priorityA !== priorityB) return priorityA - priorityB
-                if (a.lawType !== b.lawType) return (a.lawType || '').localeCompare(b.lawType || '')
-                return a.title.localeCompare(b.title)
-              })
+          // 无搜索关键词，获取所有法律列表
+          const response = await getLawSummaries({})
+          const allLawTitles = sortLaws(response.data || [])
+          
           this.lawTitleTotal = allLawTitles.length
-          // 存储全部数据，让计算属性处理分页
           this.lawTitles = allLawTitles
-          this.updateTagWidth(allLawTitles.map(law => law.title))
+          this.lawTitlesByName = []
+          this.lawTitlesByContent = []
+          this.lawTitleNameTotal = 0
+          this.lawTitleContentTotal = 0
+          
+          // 清空 allArticles，因为不再需要用它来构建法律列表
+          this.allArticles = []
+          
+          this.updateTagWidth(allLawTitles)
+          
+          // 更新缓存
           lawCache.loaded = true
-          lawCache.allArticles = this.allArticles
           lawCache.lawTitles = allLawTitles
           lawCache.lawTitleTotal = this.lawTitleTotal
           lawCache.tagWidth = this.tagWidth
         } else {
+          // 有关键词，分别获取名称匹配和内容匹配的法律列表
+          const [nameResponse, contentResponse] = await Promise.all([
+            getLawSummaries({ keyword: keywordRaw, type: 'name' }),
+            getLawSummaries({ keyword: keywordRaw, type: 'content' })
+          ])
+          
+          this.lawTitlesByName = sortLaws(nameResponse.data || [])
+          this.lawTitlesByContent = sortLaws(contentResponse.data || [])
+          
+          this.lawTitleNameTotal = this.lawTitlesByName.length
+          this.lawTitleContentTotal = this.lawTitlesByContent.length
           this.lawTitleTotal = this.lawTitleNameTotal + this.lawTitleContentTotal
-          this.updateTagWidth(this.lawTitlesByName.concat(this.lawTitlesByContent).map(law => law.title))
+          
+          // 清空 allArticles，因为不再需要用它来构建法律列表
+          this.allArticles = []
+          
+          this.updateTagWidth(this.lawTitlesByName.concat(this.lawTitlesByContent))
         }
       } catch (error) {
         console.error('加载法律名称列表失败:', error)
@@ -661,48 +704,22 @@ export default {
           }
         }
 
-        // 过滤掉明显错误的条号（如"第第一款条"、"第第X条"等）
+        // 只剔除完全没有条号的记录，其余全部保留，避免误删正常条文（如“第一百零一条至第一百零九条”等）
         let lawArticles = rawLawArticles.filter(article => {
-          const articleNumber = article.articleNumber || ''
-          
-          // 过滤掉空条号
-          if (!articleNumber || articleNumber.trim() === '') {
-            return false
-          }
-          
-          const cleanNumber = articleNumber.replace(/\s/g, '')
-          
-          // 排除包含"款"、"项"、"目"的条目（这些是条款的子项，不是条号）
-          // 例如："第一款"、"第一项"、"第一目"等
-          if (/[款项目]/.test(cleanNumber)) {
-            return false
-          }
-          
-          // 排除重复"第"的格式（如"第第X条"、"第第一款条"）
-          if (/第.*第/.test(cleanNumber)) {
-            return false
-          }
-          
-          // 检查是否是有效的条号格式
-          // 有效格式：第X条、第X章、第X节、X条等（X可以是中文数字或阿拉伯数字）
-          const isValidFormat = /^第?[一二三四五六七八九十百千万\d]+[条章节]?$/.test(cleanNumber)
-          
-          if (!isValidFormat) {
-            return false
-          }
-          
-          return true
+          const articleNumber = (article.articleNumber || '').trim()
+          return articleNumber !== ''
         })
-
-        // 如果严格过滤后为空，回退使用原始数据，避免因条号缺失导致列表空白
         if (lawArticles.length === 0) {
           lawArticles = rawLawArticles
         }
         
         // 按条号排序
-        this.currentLawArticles = lawArticles.sort((a, b) => {
+        const sortedArticles = lawArticles.sort((a, b) => {
           return this.compareArticleNumber(a.articleNumber, b.articleNumber)
         })
+        // 只保留“第X条”级别的法条，丢弃“第X章/第X节”等
+        const filteredArticles = this.filterLawArticles(sortedArticles)
+        this.currentLawArticles = filteredArticles.length > 0 ? filteredArticles : sortedArticles
         
         // 重置分页
         this.lawArticlePage = 1
@@ -882,9 +899,8 @@ export default {
       // 如果使用缓存，不需要重新加载，计算属性会自动更新
       const keyword = (this.searchKeyword || '').trim()
       const useCache = !keyword && lawCache.loaded
-      if (!useCache) {
-        this.loadLawTitles()
-      }
+      // 禁用缓存，始终拉取最新法律列表
+      this.loadLawTitles()
     },
     handleLawTitleNamePageChange(page) {
       this.lawTitleNamePage = page
@@ -902,7 +918,9 @@ export default {
           size: 2000
         })
         const fetched = (res && res.data && res.data.content) ? res.data.content.filter(a => a.title === lawTitle) : []
-        this.currentLawArticles = fetched.sort((a, b) => this.compareArticleNumber(a.articleNumber, b.articleNumber))
+        const sortedArticles = fetched.sort((a, b) => this.compareArticleNumber(a.articleNumber, b.articleNumber))
+        const filteredArticles = this.filterLawArticles(sortedArticles)
+        this.currentLawArticles = filteredArticles.length > 0 ? filteredArticles : sortedArticles
         this.currentLawArticlesTotal = this.currentLawArticles.length
         this.lawArticlePage = 1
         this.selectedLawTitle = lawTitle
@@ -979,6 +997,38 @@ export default {
       // 否则添加"第"和"条"
       return `第${articleNumber}条`
     },
+    /**
+     * 只保留“第X条”这类具体条文，过滤掉“第X章/第X节”等章节级别记录
+     */
+    filterLawArticles(articles) {
+      if (!Array.isArray(articles)) return []
+      return articles.filter(article => {
+        if (!article) return false
+        const num = (article.articleNumber || '').toString().trim()
+        // 必须包含“条”，且不包含“章”或“节”
+        return num && num.includes('条') && !num.includes('章') && !num.includes('节')
+      })
+    },
+    /**
+     * 清洗法条内容：去掉内容中的“第X章 / 第X节”标题行，只保留具体条文内容
+     */
+    cleanLawContent(content) {
+      if (!content) return ''
+      return content
+        .split('\n')
+        .filter(line => {
+          const trimmed = line.trim()
+          if (!trimmed) return true
+          // 去掉 Markdown 标题前缀，例如 "## 第五章 工资"
+          const withoutHashes = trimmed.replace(/^#{1,6}\s*/, '')
+          // 过滤以“第X章”或“第X节”开头的行
+          if (/^第[一二三四五六七八九十百千万0-9]+(章|节)/.test(withoutHashes)) {
+            return false
+          }
+          return true
+        })
+        .join('\n')
+    },
     formatCaseContent(content) {
       if (!content) return ''
       // 将 markdown 格式的标题转换为 HTML
@@ -1001,32 +1051,123 @@ export default {
       
       return formatted
     },
-    updateTagWidth(titles = []) {
-      if (!titles.length) {
+    updateTagWidth(laws = []) {
+      if (!laws.length) {
         this.tagWidth = 88
         return
       }
-      const abbrs = titles.map(t => this.getLawAbbr(t))
+      // 支持传入 law 对象数组或 title 字符串数组（向后兼容）
+      const abbrs = laws.map(law => {
+        if (typeof law === 'string') {
+          return this.getLawAbbr(law)
+        } else {
+          return this.getLawAbbr(law)
+        }
+      })
       const maxLen = Math.max(...abbrs.map(a => a.length || 0))
       // 粗略估算宽度：截断后字符数 * 14px + padding；设置上下限防止过大或过小
       const estimated = maxLen * 14 + 20
       this.tagWidth = Math.min(Math.max(estimated, 88), 240)
     },
-    getLawAbbr(title) {
-      if (!title) return ''
-      // 简单前缀清理，取核心简称
-      let abbr = title
-        .replace(/^中华人民共和国/, '')
-        .replace(/^中华人民共和/, '')
-        .replace(/^中国/, '')
-        .trim()
-      if (!abbr) abbr = title
-      // 过长时截断并加省略，避免角标过宽
-      const maxLen = 10
-      if (abbr.length > maxLen) {
-        abbr = abbr.slice(0, maxLen) + '...'
+    getLawAbbr(lawOrTitle) {
+      // 支持传入 law 对象或 title 字符串
+      let title = ''
+      let publishOrg = ''
+      
+      if (typeof lawOrTitle === 'string') {
+        title = lawOrTitle
+      } else if (lawOrTitle && typeof lawOrTitle === 'object') {
+        title = lawOrTitle.title || ''
+        publishOrg = (lawOrTitle.publishOrg || '').toLowerCase()
+      } else {
+        return ''
       }
-      return abbr
+      
+      if (!title) return ''
+      
+      const titleLower = title.toLowerCase()
+      
+      // 判断是否是地方法规
+      const isLocalLaw = titleLower.match(/省|市|自治区|特别行政区|地方|县|自治县|施行|变通/) || 
+                        titleLower.includes('施行《') ||
+                        (publishOrg && publishOrg.match(/省|市|自治区|特别行政区|地方|县|自治县/) &&
+                         !publishOrg.includes('最高') && !publishOrg.includes('国务院') && 
+                         !publishOrg.includes('全国'))
+      
+      // 判断是否是司法解释
+      const isJudicialInterpretation = (publishOrg.includes('最高') && (publishOrg.includes('法院') || publishOrg.includes('检察院'))) ||
+                                      (titleLower.includes('解释') && (publishOrg.includes('法院') || publishOrg.includes('检察院'))) ||
+                                      (titleLower.includes('规定') && publishOrg.includes('最高') && (publishOrg.includes('法院') || publishOrg.includes('检察院'))) ||
+                                      (titleLower.includes('意见') && publishOrg.includes('最高') && (publishOrg.includes('法院') || publishOrg.includes('检察院')))
+      
+      // 判断是否是宪法
+      const isConstitution = titleLower.includes('宪法') && !titleLower.includes('修正') && !titleLower.match(/\(\d{4}年\)/) && !titleLower.match(/\d{4}年/)
+      
+      // 判断是否是法律（中华人民共和国XX法）
+      const isLaw = titleLower.includes('中华人民共和国') && titleLower.includes('法') && 
+                   !titleLower.match(/省|市|自治区|特别行政区|地方|县|自治县|施行|变通/) &&
+                   !titleLower.includes('修正') && !titleLower.match(/\(\d{4}年\)/) && !titleLower.match(/\d{4}年/)
+      
+      // 判断是否是行政法规
+      const isAdministrativeRegulation = (publishOrg.includes('国务院') || publishOrg.includes('中华人民共和国国务院')) &&
+                                        (titleLower.includes('条例') || titleLower.includes('办法') || titleLower.includes('规定') || titleLower.includes('决定')) &&
+                                        !titleLower.match(/省|市|自治区|特别行政区|地方|县|自治县|施行|变通/)
+      
+      // 判断是否是监察法规
+      const isSupervisionRegulation = (titleLower.includes('监察') || publishOrg.includes('监察')) &&
+                                     !titleLower.match(/省|市|自治区|特别行政区|地方|县|自治县|施行|变通/)
+      
+      // 根据类型返回相应标签
+      if (isLocalLaw) {
+        return '地方法规'
+      } else if (isJudicialInterpretation) {
+        return '司法解释'
+      } else if (isConstitution) {
+        // 宪法显示简称
+        let abbr = title.replace(/^中华人民共和国/, '').replace(/^中华人民共和/, '').replace(/^中国/, '').trim()
+        if (!abbr) abbr = title
+        const maxLen = 10
+        if (abbr.length > maxLen) {
+          abbr = abbr.slice(0, maxLen) + '...'
+        }
+        return abbr
+      } else if (isLaw) {
+        // 法律显示简称
+        let abbr = title.replace(/^中华人民共和国/, '').replace(/^中华人民共和/, '').replace(/^中国/, '').trim()
+        if (!abbr) abbr = title
+        const maxLen = 10
+        if (abbr.length > maxLen) {
+          abbr = abbr.slice(0, maxLen) + '...'
+        }
+        return abbr
+      } else if (isAdministrativeRegulation) {
+        // 行政法规显示简称
+        let abbr = title.replace(/^中华人民共和国/, '').replace(/^中华人民共和/, '').replace(/^中国/, '').trim()
+        if (!abbr) abbr = title
+        const maxLen = 10
+        if (abbr.length > maxLen) {
+          abbr = abbr.slice(0, maxLen) + '...'
+        }
+        return abbr
+      } else if (isSupervisionRegulation) {
+        // 监察法规显示简称
+        let abbr = title.replace(/^中华人民共和国/, '').replace(/^中华人民共和/, '').replace(/^中国/, '').trim()
+        if (!abbr) abbr = title
+        const maxLen = 10
+        if (abbr.length > maxLen) {
+          abbr = abbr.slice(0, maxLen) + '...'
+        }
+        return abbr
+      } else {
+        // 其他情况显示简称（向后兼容）
+        let abbr = title.replace(/^中华人民共和国/, '').replace(/^中华人民共和/, '').replace(/^中国/, '').trim()
+        if (!abbr) abbr = title
+        const maxLen = 10
+        if (abbr.length > maxLen) {
+          abbr = abbr.slice(0, maxLen) + '...'
+        }
+        return abbr
+      }
     }
   }
 }
